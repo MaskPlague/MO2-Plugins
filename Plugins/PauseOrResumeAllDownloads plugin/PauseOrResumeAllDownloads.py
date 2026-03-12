@@ -7,7 +7,6 @@ try:
     from PyQt6.QtGui import QIcon, QCursor, QAction
     from PyQt6.QtWidgets import QMainWindow, QTabWidget, QWidget, QTreeView, QApplication, QMenu, QPushButton, QHBoxLayout
 
-    # Compatibility flags
     SELECT_FLAG = QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows
     BLOCKED_EVENTS = {
         QEvent.Type.MouseMove, QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease, 
@@ -21,7 +20,6 @@ except ImportError:
     from PyQt5.QtGui import QIcon, QCursor, QAction
     from PyQt5.QtWidgets import QMainWindow, QTabWidget, QWidget, QTreeView, QApplication, QMenu, QPushButton, QHBoxLayout
 
-    # Compatibility flags
     SELECT_FLAG = QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
     BLOCKED_EVENTS = {
         QEvent.MouseMove, QEvent.MouseButtonPress, QEvent.MouseButtonRelease, 
