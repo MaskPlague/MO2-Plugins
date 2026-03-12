@@ -72,36 +72,38 @@ class ContextMenuEventFilter(QObject):
             menu.insertAction(actions[2], self.resume_all_action)
     
     def auto_trigger_menu_pause(self, menu: QMenu):
-        try:
-            selection_model = self.download_view.selectionModel()
-            if not selection_model.hasSelection():
-                QTimer.singleShot(10, self.plugin._process_next_download)
-                return
-            index = selection_model.currentIndex()
-            item = index.sibling(index.row(), DOWNLOAD_COLUMN).data(Qt.ItemDataRole.DisplayRole)
-            actions = menu.actions()
-            if item is None and len(actions) == 11:
+        selection_model = self.download_view.selectionModel()
+        if not selection_model.hasSelection():
+            QTimer.singleShot(10, self.plugin._process_next_download)
+            return
+        index = selection_model.currentIndex()
+        item = index.sibling(index.row(), DOWNLOAD_COLUMN).data(Qt.ItemDataRole.DisplayRole)
+        actions = menu.actions()
+        if item is None and len(actions) == 11:
+            file_name = index.sibling(index.row(), FILENAME_COLUMN).data(Qt.ItemDataRole.DisplayRole)
+            if file_name not in self.plugin.processed_files:
+                self.plugin.processed_files.append(file_name)
                 pause_action = actions[1]
                 pause_action.trigger()
-        finally:
-            menu.close()
-            QTimer.singleShot(10, self.plugin._process_next_download)
+        menu.close()
+        QTimer.singleShot(10, self.plugin._process_next_download)
 
     def auto_trigger_menu_resume(self, menu: QMenu):
-        try:
-            selection_model = self.download_view.selectionModel()
-            if not selection_model.hasSelection():
-                QTimer.singleShot(10, self.plugin._process_next_download)
-                return
-            index = selection_model.currentIndex()
-            item = index.sibling(index.row(), DOWNLOAD_COLUMN).data(Qt.ItemDataRole.DisplayRole)
-            actions = menu.actions()
-            if isinstance(item, str) and len(actions) == 11:
+        selection_model = self.download_view.selectionModel()
+        if not selection_model.hasSelection():
+            QTimer.singleShot(10, self.plugin._process_next_download)
+            return
+        index = selection_model.currentIndex()
+        item = index.sibling(index.row(), DOWNLOAD_COLUMN).data(Qt.ItemDataRole.DisplayRole)
+        actions = menu.actions()
+        if isinstance(item, str) and len(actions) == 11:
+            file_name = index.sibling(index.row(), FILENAME_COLUMN).data(Qt.ItemDataRole.DisplayRole)
+            if file_name not in self.plugin.processed_files:
+                self.plugin.processed_files.append(file_name)
                 resume_action = actions[1]
                 resume_action.trigger()
-        finally:
-            menu.close()
-            QTimer.singleShot(10, self.plugin._process_next_download)
+        menu.close()
+        QTimer.singleShot(10, self.plugin._process_next_download)
            
 class PauseOrResumeAllDownloads(mobase.IPlugin):
 
@@ -112,6 +114,7 @@ class PauseOrResumeAllDownloads(mobase.IPlugin):
     def init(self, organiser = mobase.IOrganizer):
         self._organizer = organiser
         self.pending_files = []
+        self.processed_files = []
         self.is_running = False
         self.is_pausing = False
         self.is_resuming = False
@@ -205,6 +208,7 @@ class PauseOrResumeAllDownloads(mobase.IPlugin):
         self.pause_button.setEnabled(False)
         self.is_running = True
         self.pending_files.clear()
+        self.processed_files.clear()
         QApplication.restoreOverrideCursor()
         QApplication.setOverrideCursor(QCursor(WAIT_CURSOR))
 
