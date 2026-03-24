@@ -40,8 +40,10 @@ class ContextMenuEventFilter(QObject):
         self.plugin: QueryAllInfo = plugin_instance
         self.action = QAction("Query All Info")
         self.action.triggered.connect(self.plugin._queryAllInfo)
+        self.buttons: list[QPushButton] = []
+        self.active_file = None
 
-    def eventFilter(self, obj, event: QEvent):
+    def eventFilter(self, obj: QObject, event: QEvent):
         if getattr(self.plugin, 'is_auto_querying', False):
             if event.type() in BLOCKED_EVENTS:
                 return True
@@ -50,10 +52,25 @@ class ContextMenuEventFilter(QObject):
             if obj.parent() == self.download_view:
                 if getattr(self.plugin, 'is_auto_querying', False):
                     QTimer.singleShot(0, lambda:self.auto_trigger_menu(obj))
+                    self.buttons.clear()
                     return False
                 elif getattr(self.plugin, "insert_action_in_context_menus", False):
                     self.insert_action(obj)
+        elif event.type() == QEvent.Type.Show and not self.plugin.processing_events and getattr(self.plugin, 'is_auto_querying', False):
+            if isinstance(obj, QPushButton):
+                self.buttons.append(obj)
+            elif obj.objectName() == 'QInputDialogClassWindow':
+                QTimer.singleShot(0, self.close_window)
+                
         return False
+    
+    def close_window(self):
+        if len(self.buttons) == 2:
+            self.buttons[1].click()
+            QTimer.singleShot(0, self.plugin._onDownloadComplete)
+        self.buttons.clear()
+        if self.active_file != None:
+            self.plugin.make_fake_metadata(self.active_file)
     
     def insert_action(self, menu:QMenu):
         selection_model = self.download_view.selectionModel()
@@ -68,6 +85,7 @@ class ContextMenuEventFilter(QObject):
     def auto_trigger_menu(self, menu: QMenu):
         try:
             file_name = None
+            self.active_file = None
             selection_model = self.download_view.selectionModel()
             if not selection_model.hasSelection():
                 QTimer.singleShot(50, self.plugin._process_next)
@@ -83,6 +101,7 @@ class ContextMenuEventFilter(QObject):
                     query_action = actions[1]
                     if 'Nexus' not in query_action.text():
                         self.plugin.queried_filenames.append(file_name)
+                        self.active_file = file_name
                         self.plugin._log(f"Querying info for {file_name}")
                         query_action.trigger()
                     else:
@@ -109,8 +128,10 @@ class QueryAllInfo(mobase.IPlugin):
         self.download_dir: mobase.IDownloadManager = self._organizer.downloadsPath()
         self.insert_action_in_context_menus = self._organizer.pluginSetting(self.name(), "InsertActionInContextMenus")
         self.insert_button_in_download_tab = self._organizer.pluginSetting(self.name(), "InsertButtonInDownloadTab")
+        self.fake_metadata = self._organizer.pluginSetting(self.name(), "FakeMetadataForNonNexus")
         self._organizer.downloadManager().onDownloadComplete(self._onDownloadComplete)
         self._organizer.onUserInterfaceInitialized(self._onUserInterfaceInitialized)
+        self._organizer.onPluginSettingChanged(self._onPluginSettingChanged)
         self.button = QPushButton("Query All Info")
         self.button.adjustSize()
         self.button.clicked.connect(self._queryAllInfo)
@@ -136,7 +157,7 @@ class QueryAllInfo(mobase.IPlugin):
         return self.tr("Adds a Query All Info button.")
     
     def version(self) -> mobase.VersionInfo:
-        return mobase.VersionInfo(1, 1, 0, mobase.ReleaseType.ALPHA)
+        return mobase.VersionInfo(1, 2, 0, mobase.ReleaseType.ALPHA)
     
     def settings(self):
         return [
@@ -145,7 +166,10 @@ class QueryAllInfo(mobase.IPlugin):
                                  False),
             mobase.PluginSetting("InsertButtonInDownloadTab", 
                                  'If the "Query All Info" button should be inserted at the top of the downloads tab (changing requires restarting MO2).', 
-                                 True)
+                                 True),
+            mobase.PluginSetting("FakeMetadataForNonNexus",
+                                 'If the plugin should create a fake file.zip.meta file for mods that are not from the Nexus.',
+                                 False)
             ]
     
     def displayName(self):
@@ -166,6 +190,11 @@ class QueryAllInfo(mobase.IPlugin):
     def _log(self, string): #for debugging
         if DEBUG:
             print("QueryAllInfo log: " + string)
+
+    def _onPluginSettingChanged(self, plugin, setting_changed, _3, new_val):
+        if plugin == self.name():
+            if setting_changed == "FakeMetadataForNonNexus":
+                self.fake_metadata = new_val
 
     def _onUserInterfaceInitialized(self, main_window: QMainWindow):
         self.main_window = main_window
@@ -221,7 +250,7 @@ class QueryAllInfo(mobase.IPlugin):
         self.message_box.show()
         self._process_next()
 
-    def _onDownloadComplete(self, id):
+    def _onDownloadComplete(self, *args):
         if not self.is_auto_querying:
             return
         if not self.processing_events:
@@ -266,6 +295,38 @@ class QueryAllInfo(mobase.IPlugin):
         rect = self.downloadView.visualRect(index)
         center_pos = rect.center()
         self.downloadView.customContextMenuRequested.emit(center_pos)
+
+    def make_fake_metadata(self, file_name):
+        if not self.fake_metadata:
+            return
+        path = os.path.join(self.download_dir, file_name) + '.meta'
+        with open(path, "a+") as f:
+            f.seek(0)
+            lines = f.readlines()
+            if len(lines) <= 2:
+                f.seek(0)
+                f.truncate(0)
+                f.write("[General]\n"+
+                    "removed=false\n"+
+                    "gameName=\n"+
+                    "modID=0\n"+
+                    "fileID=0}\n"+
+                    "url=\n"+
+                    "name=\n"+
+                    "description=\n"+
+                    "modName=\n"+
+                    "version=0.0.0.0\n"+
+                    "newestVersion=0.0.0.0\n"+
+                    f"fileTime=@DateTime({r'\0\0\0\x10\0\x80\0\0\0\0\0\0\0\xff\xff\xff\xff\0'})\n"+
+                    "fileCategory=0\n"+
+                    "category=0\n"+
+                    "repository=NotNexus\n"+
+                    f"userData=@Variant({r'\0\0\0\b\0\0\0\0'})\n"+
+                    "installed=false\n"+
+                    "uninstalled=false\n"+
+                    "paused=false")
+            f.close()
+        return            
 
 def createPlugin():
     return QueryAllInfo()
