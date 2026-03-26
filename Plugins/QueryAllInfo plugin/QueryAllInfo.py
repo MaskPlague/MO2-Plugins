@@ -61,8 +61,15 @@ class ContextMenuEventFilter(QObject):
                 self.buttons.append(obj)
             elif obj.objectName() == 'QInputDialogClassWindow':
                 QTimer.singleShot(0, self.close_window)
+            elif obj.objectName() == 'SelectionDialogWindow':
+                QTimer.singleShot(0, self.close_selection_window)
                 
         return False
+    
+    def close_selection_window(self):
+        if len(self.buttons) > 0:
+            self.buttons[-1].click()
+            self.buttons.clear()
     
     def close_window(self):
         if len(self.buttons) == 2:
@@ -157,7 +164,7 @@ class QueryAllInfo(mobase.IPlugin):
         return self.tr("Adds a Query All Info button.")
     
     def version(self) -> mobase.VersionInfo:
-        return mobase.VersionInfo(1, 2, 0, mobase.ReleaseType.ALPHA)
+        return mobase.VersionInfo(1, 2, 1, mobase.ReleaseType.ALPHA)
     
     def settings(self):
         return [
