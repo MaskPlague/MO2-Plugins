@@ -145,7 +145,8 @@ class InstallMultipleMods(mobase.IPluginTool):
 
     def _compile_regex(self):
         self.complex_regex = QRegularExpression(
-            r"(^([a-zA-Z0-9_'\"\-.() ]*?)([-_ ][VvRr]+[0-9]+(?:(?:[\.][0-9]+){0,2}|(?:[_][0-9]+){0,2}|(?:[-.][0-9]+){0,2})?[ab]?)??-([1-9][0-9]+)?-.*?\.(zip|rar|7z))"
+            #r"(^([a-zA-Z0-9_'\"\-.() ]*?)([-_ ][VvRr]+[0-9]+(?:(?:[\.][0-9]+){0,2}|(?:[_][0-9]+){0,2}|(?:[-.][0-9]+){0,2})?[ab]?)??-([1-9][0-9]+)?-.*?\.(zip|rar|7z))"
+            r"(^([a-zA-Z0-9_'\"\-.() ]*?)([-_ ][VvRr]+[0-9]+(?:(?:[\.][0-9]+){0,2}|(?:[_][0-9]+){0,2}|(?:[-.][0-9]+){0,2})?[ab]?)??-([1-9][0-9]+)?-(.*?)(?:-[0-9]{4,})?\.(zip|rar|7z))"
         )
         self.simple_regex = QRegularExpression(r"(^[^a-zA-Z]*([a-zA-Z_ ]+))")
 
@@ -184,7 +185,7 @@ class InstallMultipleMods(mobase.IPluginTool):
         return self.tr("Allows manual selection of multiple archives for seqeuential installation.")
     
     def version(self) -> mobase.VersionInfo:
-        return mobase.VersionInfo(0, 1, 5, mobase.ReleaseType.FINAL)
+        return mobase.VersionInfo(0, 1, 6, mobase.ReleaseType.FINAL)
     
     def settings(self):
         return [
@@ -422,6 +423,8 @@ class InstallMultipleMods(mobase.IPluginTool):
         self.continueBtn.setEnabled(False)
 
         if handler is not None:
+            if handler.version().scheme() == mobase.VersionScheme.DATE and not self.mod_version is None:
+                handler.setVersion(self.mod_version)
             self._handle_install_success()
         elif self.IMM_closed:
             self._handle_fomod_cycle()
@@ -435,7 +438,12 @@ class InstallMultipleMods(mobase.IPluginTool):
             return os.path.splitext(file_name)[0]
         complex_match = self.complex_regex.match(file_name)
         simple_match = self.simple_regex.match(file_name)
+        self.mod_version = None
         if complex_match.hasMatch():
+            try:
+                self.mod_version = mobase.VersionInfo(complex_match.captured(5).replace('-','.'))
+            except:
+                self.mod_version = None
             return complex_match.captured(2)
         elif self.use_file_name:
             return os.path.splitext(file_name)[0]
