@@ -328,8 +328,11 @@ class InstallMultipleMods(mobase.IPluginTool):
         has_cancelBtn = False
 
         for widget in self.app.topLevelWidgets():
-            # BAIN Installer
-            if widget.objectName() == "BainComplexInstallerDialog":
+            # For future use with figuring out other possible installers
+            # print(f"{widget.objectName()}, {widget.windowTitle()}, {type(widget)}")
+
+            # BAIN Installer non-wizard and Wizard
+            if widget.objectName() in ("BainComplexInstallerDialog", "WizardInstallerDialog"):
                 target_widget = widget
                 has_cancelBtn = True
                 break
@@ -461,6 +464,7 @@ class InstallMultipleMods(mobase.IPluginTool):
             return file_name
 
     def _handle_install_success(self):
+        self.IMM_closed = False # Reset flag because it can be triggered a second time by BAIN Wizard while BAIN Wizard is supposed to be closed?
         self._queue.pop(0)
         self._save_queue()
         
