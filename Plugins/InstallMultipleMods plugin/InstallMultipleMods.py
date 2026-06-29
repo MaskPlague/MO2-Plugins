@@ -325,23 +325,31 @@ class InstallMultipleMods(mobase.IPluginTool):
         self.fmod_check_timer.stop()
         
         target_widget = None
-        is_regular_fomod = False
+        has_cancelBtn = False
 
         for widget in self.app.topLevelWidgets():
+            # BAIN Installer
+            if widget.objectName() == "BainComplexInstallerDialog":
+                target_widget = widget
+                has_cancelBtn = True
+                break
+            
+            # FOMODs have the mod name as the window title
             if widget.windowTitle() != self.name_suggestion:
                 continue
 
             # Regular FOMOD installer
             if widget.objectName() == "FomodInstallerDialog":
                 target_widget = widget
-                is_regular_fomod = True
+                has_cancelBtn = True
                 break
-            
+
             # FomodPlusPlus, QDialog with mod name as title, has no object name :/
             if isinstance(widget, QDialog):
                 target_widget = widget
-                is_regular_fomod = False
+                has_cancelBtn = False
                 break
+            
 
         if target_widget:
             should_close = (
@@ -354,8 +362,8 @@ class InstallMultipleMods(mobase.IPluginTool):
             
             if should_close:
                 self.IMM_closed = True
-                self._click_cancel_button(target_widget, is_regular_fomod)
-            elif not is_regular_fomod:
+                self._click_cancel_button(target_widget, has_cancelBtn)
+            elif not has_cancelBtn:
                 self.messageBox.hide()
             return
 
@@ -367,9 +375,9 @@ class InstallMultipleMods(mobase.IPluginTool):
         if not self.timers_stopped:
             self.fmod_check_timer.start()
 
-    def _click_cancel_button(self, widget:QDialog, is_standard:bool):
+    def _click_cancel_button(self, widget:QDialog, has_cancelBtn:bool):
         try:
-            if is_standard:
+            if has_cancelBtn:
                 cancel_btn = widget.findChild(QPushButton, "cancelBtn")
                 if cancel_btn:
                     cancel_btn.click()
