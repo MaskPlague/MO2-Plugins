@@ -135,6 +135,7 @@ class InstallMultipleMods(mobase.IPluginTool):
         self.only_use_file_name = self._get_setting("OnlyUseFileName", False)
         self.shortcut_text = self._get_setting("Shortcut", DEFAULT_SHORTCUT)
         self.downloadLocation = self._get_setting("LastPath", "downloads")
+        self.auto_rename_duplicates = self._get_setting("AutoRenameDuplicateMods", False)
 
         self._queue = self._get_list_setting("Queue")
         self._fomods = self._get_list_setting("Fomods")
@@ -186,7 +187,7 @@ class InstallMultipleMods(mobase.IPluginTool):
         return self.tr("Allows manual selection of multiple archives for seqeuential installation.")
     
     def version(self) -> mobase.VersionInfo:
-        return mobase.VersionInfo(0, 1, 9, mobase.ReleaseType.FINAL)
+        return mobase.VersionInfo(0, 1, 10, mobase.ReleaseType.FINAL)
     
     def settings(self):
         return [
@@ -202,6 +203,7 @@ class InstallMultipleMods(mobase.IPluginTool):
                                   True),
             mobase.PluginSetting("UseFileName", self.tr("Use the file name as the suggestion when a file is not from Nexus"), True),
             mobase.PluginSetting("OnlyUseFileName", self.tr("Only use the file name as the suggestion"), False),
+            mobase.PluginSetting("AutoRenameDuplicateMods", self.tr("If a mod already exists the plugin will add a number to the end of the file to install it."), False),
             mobase.PluginSetting("Shortcut", self.tr("Shortcut to install multiple mods"), DEFAULT_SHORTCUT),
             mobase.PluginSetting("Queue", self.tr("Holder for the install queue (NOT A SETTING)"), ""),
             mobase.PluginSetting("Fomods", self.tr("Holder for fomods (NOT A SETTING)"), "")
@@ -266,6 +268,8 @@ class InstallMultipleMods(mobase.IPluginTool):
             elif setting_changed == "Shortcut":
                 self.shortcut.setKey(new_val)
                 self.shortcut_text = new_val
+            elif setting_changed == "AutoRenameDuplicateMods":
+                self.auto_rename_duplicates = new_val
 
     def try_installing_mods(self):
         if not self._installing:
@@ -416,6 +420,17 @@ class InstallMultipleMods(mobase.IPluginTool):
         path = self._queue[0]
         base_name = self._get_mod_name(os.path.basename(path))
         self.name_suggestion = f"{self.name_prefix}{base_name}{self.name_suffix}"
+        suggestion_counter = 0
+        def get_available_name(name):
+            nonlocal suggestion_counter
+            if self._organizer.modList().getMod(name):
+                suggestion_counter += 1
+                return get_available_name(self.name_suggestion + self.tr(" - auto_installed_copy_") + str(suggestion_counter))
+            else:
+                return name
+
+        if self.auto_rename_duplicates and self.auto_install:
+            self.name_suggestion = get_available_name(self.name_suggestion)
         
         self.num += 1
         self._save_queue() 
