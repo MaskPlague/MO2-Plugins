@@ -123,6 +123,7 @@ class InstallMultipleMods(mobase.IPluginTool):
         self._modList = []
         self._queue = []
         self._fomods = []
+        self.mod_version = None
 
     def _load_settings(self):
         self.replace_normal_button = self._get_setting("ReplaceInstallButton", False)
@@ -185,7 +186,7 @@ class InstallMultipleMods(mobase.IPluginTool):
         return self.tr("Allows manual selection of multiple archives for seqeuential installation.")
     
     def version(self) -> mobase.VersionInfo:
-        return mobase.VersionInfo(0, 1, 6, mobase.ReleaseType.FINAL)
+        return mobase.VersionInfo(0, 1, 7, mobase.ReleaseType.FINAL)
     
     def settings(self):
         return [
@@ -445,11 +446,11 @@ class InstallMultipleMods(mobase.IPluginTool):
         self._make_messageBox()
 
     def _get_mod_name(self, file_name: str):
+        self.mod_version = None
         if self.only_use_file_name:
             return os.path.splitext(file_name)[0]
         complex_match = self.complex_regex.match(file_name)
         simple_match = self.simple_regex.match(file_name)
-        self.mod_version = None
         if complex_match.hasMatch():
             try:
                 self.mod_version = mobase.VersionInfo(complex_match.captured(5).replace('-','.'))
