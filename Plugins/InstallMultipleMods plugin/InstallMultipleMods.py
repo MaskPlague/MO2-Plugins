@@ -186,7 +186,7 @@ class InstallMultipleMods(mobase.IPluginTool):
         return self.tr("Allows manual selection of multiple archives for seqeuential installation.")
     
     def version(self) -> mobase.VersionInfo:
-        return mobase.VersionInfo(0, 1, 7, mobase.ReleaseType.FINAL)
+        return mobase.VersionInfo(0, 1, 9, mobase.ReleaseType.FINAL)
     
     def settings(self):
         return [
