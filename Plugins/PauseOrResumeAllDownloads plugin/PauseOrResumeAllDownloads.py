@@ -1,5 +1,5 @@
 #Written by MaskPlauge
-import mobase
+import mobase #type: ignore
 import os
 
 try:

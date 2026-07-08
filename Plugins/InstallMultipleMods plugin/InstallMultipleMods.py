@@ -1,5 +1,5 @@
 #Written by MaskPlague
-import mobase
+import mobase #type: ignore
 import os
 import locale
 
