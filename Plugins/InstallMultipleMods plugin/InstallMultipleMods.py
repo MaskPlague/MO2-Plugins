@@ -6,11 +6,11 @@ import locale
 try:
     from PyQt6.QtCore import QCoreApplication, QTimer, QRegularExpression, QObject, QEvent
     from PyQt6.QtGui import QIcon, QShortcut, QAction
-    from PyQt6.QtWidgets import QFileDialog, QMessageBox, QApplication, QPushButton, QDialog, QMenu
+    from PyQt6.QtWidgets import QFileDialog, QMessageBox, QApplication, QPushButton, QDialog, QMenu, QToolBar
 except ImportError:
     from PyQt5.QtCore import QCoreApplication, QTimer, QRegularExpression, QObject, QEvent
     from PyQt5.QtGui import QIcon, QShortcut, QAction
-    from PyQt5.QtWidgets import QFileDialog, QMessageBox, QApplication, QPushButton, QDialog, QMenu
+    from PyQt5.QtWidgets import QFileDialog, QMessageBox, QApplication, QPushButton, QDialog, QMenu, QToolBar
 
 DEFAULT_PREFIX = ""
 DEFAULT_SUFFIX = ""
@@ -110,6 +110,7 @@ class InstallMultipleMods(mobase.IPluginTool):
         self.shortcut.activated.connect(self.display)
         self._organizer.onUserInterfaceInitialized(self._set_shortcut_parent)
         self._organizer.onUserInterfaceInitialized(self._setup_filter)
+        self._organizer.onUserInterfaceInitialized(self._replace_toolbar_button)
         self._organizer.onPluginSettingChanged(self.settings_update)
         return True
 
@@ -127,6 +128,7 @@ class InstallMultipleMods(mobase.IPluginTool):
 
     def _load_settings(self):
         self.replace_normal_button = self._get_setting("ReplaceInstallButton", False)
+        self.replace_toolbar_button = self._get_setting("ReplaceToolbarButton", False)
         self.name_prefix = self._get_setting("NamePrefix", DEFAULT_PREFIX)
         self.name_suffix = self._get_setting("NameSuffix", DEFAULT_SUFFIX)
         self.auto_install = self._get_setting("AutoQuickInstall", False)
@@ -174,6 +176,18 @@ class InstallMultipleMods(mobase.IPluginTool):
             self.replacer = InstallButtonReplacer(self)
             QApplication.instance().installEventFilter(self.replacer)
 
+    def _replace_toolbar_button(self, parent: QObject):
+        if not self.replace_toolbar_button:
+            return
+        tool_bar = parent.findChild(QToolBar, 'toolBar')
+        if tool_bar:
+            for child in tool_bar.actions():
+                if child.objectName() == "actionInstallMod":
+                    child.triggered.disconnect()
+                    child.triggered.connect(self.display)
+                    print(self.tr("IMM: Replaced trigger for actionInstallMod in toolbar."))
+                    break
+
     def name(self) -> str:
         return "Install Mod(s)"
     
@@ -187,12 +201,15 @@ class InstallMultipleMods(mobase.IPluginTool):
         return self.tr("Allows manual selection of multiple archives for seqeuential installation.")
     
     def version(self) -> mobase.VersionInfo:
-        return mobase.VersionInfo(0, 1, 10, mobase.ReleaseType.FINAL)
+        return mobase.VersionInfo(0, 1, 11, mobase.ReleaseType.FINAL)
     
     def settings(self):
         return [
             mobase.PluginSetting("ReplaceInstallButton", 
                                   self.tr("Replace the normal \"Install Mod...\" button in the list options drop down. (Requires MO2 restart after toggle.)"), 
+                                  False),
+            mobase.PluginSetting("ReplaceToolbarButton",
+                                  self.tr("Replace the function of the toolbar button \"Install a mod from an Archive\". (Requires MO2 restart after toggle.)"),
                                   False),
             mobase.PluginSetting("LastPath", self.tr("Last opened path for installing."), "downloads"),
             mobase.PluginSetting("NamePrefix", self.tr("Prefix added to the beginning of mod names"), DEFAULT_PREFIX),
