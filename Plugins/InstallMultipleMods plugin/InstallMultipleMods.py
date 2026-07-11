@@ -125,6 +125,8 @@ class InstallMultipleMods(mobase.IPluginTool):
         self._queue = []
         self._fomods = []
         self.mod_version = None
+        #TODO: Remove, this is a temporary fix until FOMOD Plus fixes the IModInterface bug.
+        self.using_fomod_plus_temp_fix = False
 
     def _load_settings(self):
         self.replace_normal_button = self._get_setting("ReplaceInstallButton", False)
@@ -201,7 +203,7 @@ class InstallMultipleMods(mobase.IPluginTool):
         return self.tr("Allows manual selection of multiple archives for seqeuential installation.")
     
     def version(self) -> mobase.VersionInfo:
-        return mobase.VersionInfo(0, 1, 11, mobase.ReleaseType.FINAL)
+        return mobase.VersionInfo(0, 1, 12, mobase.ReleaseType.FINAL)
     
     def settings(self):
         return [
@@ -348,6 +350,7 @@ class InstallMultipleMods(mobase.IPluginTool):
         
         target_widget = None
         has_cancelBtn = False
+        self.using_fomod_plus_temp_fix = False
 
         for widget in self.app.topLevelWidgets():
             # For future use with figuring out other possible installers
@@ -373,6 +376,7 @@ class InstallMultipleMods(mobase.IPluginTool):
             if isinstance(widget, QDialog):
                 target_widget = widget
                 has_cancelBtn = False
+                self.using_fomod_plus_temp_fix = True
                 break
             
 
@@ -467,8 +471,9 @@ class InstallMultipleMods(mobase.IPluginTool):
         self.continueBtn.setEnabled(False)
 
         if handler is not None:
-            if handler.version().scheme() == mobase.VersionScheme.DATE and not self.mod_version is None:
-                handler.setVersion(self.mod_version)
+            if not self.using_fomod_plus_temp_fix:
+                if handler.version().scheme() == mobase.VersionScheme.DATE and not self.mod_version is None:
+                    handler.setVersion(self.mod_version)
             self._handle_install_success()
         elif self.IMM_closed:
             self._handle_fomod_cycle()
