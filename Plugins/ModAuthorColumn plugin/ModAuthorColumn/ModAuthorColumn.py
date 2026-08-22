@@ -2,28 +2,28 @@
 import mobase #type: ignore
 import os
 import configparser
-import json
+
 from .SettingsDialog import SettingsDialog
 from .AuthorTreeView import ModAuthorTreeView
-from .Global import UNKNOWN_AUTHOR, PRIORITY_COL, NEXUS_API_URL
+from .Global import (UNKNOWN_AUTHOR, PRIORITY_COL, 
+                     MINIMUM_COL_WIDTH, DEFAULT_AUTHOR_NAME_COL_WIDTH, 
+                     DEFAULT_MOD_NAME_COL_WIDTH, DEFAULT_TABLE_WIDTH)
 
 try:
-    from PyQt6.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex, QUrl
+    from PyQt6.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex
     from PyQt6.QtGui import QIcon
-    from PyQt6.QtWidgets import QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy, QMessageBox
-    from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
+    from PyQt6.QtWidgets import QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy, QFrame, QStackedLayout
 except ImportError:
-    from PyQt5.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex, QUrl
+    from PyQt5.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex
     from PyQt5.QtGui import QIcon
-    from PyQt5.QtWidgets import QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy, QMessageBox
-    from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
+    from PyQt5.QtWidgets import QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy, QFrame, QStackedLayout
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from PyQt6.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex, QUrl
+    from PyQt6.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex
     from PyQt6.QtGui import QIcon
-    from PyQt6.QtWidgets import QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy, QMessageBox
-    from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
+    from PyQt6.QtWidgets import QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy, QFrame, QStackedLayout
+
 class TableResizeHandle(QFrame):
     def __init__(self, table, parent=None):
         super().__init__(parent)
@@ -79,8 +79,6 @@ class TableResizeHandle(QFrame):
 
 
 class ModAuthorColumn(mobase.IPluginTool):
-    key_validated = False
-    api_key = ""
     use_uploader = False
     hide_author_column = False
     _organizer: mobase.IOrganizer = None
@@ -102,7 +100,6 @@ class ModAuthorColumn(mobase.IPluginTool):
 
     def settings(self):
         return [
-            mobase.PluginSetting("api_key", "Your MO2 API key.", ""),
             mobase.PluginSetting("UseUploader", "If set to True, use the Uploader instead of the Author", False),
             mobase.PluginSetting("HideAuthorColumn", "Hides the Author Column", False)
         ]
@@ -117,20 +114,13 @@ class ModAuthorColumn(mobase.IPluginTool):
         return QIcon(None)
 
     def display(self):
-        # Open our custom dialog
-        dialog = SettingsDialog(self.api_key, self.key_validated, self.use_uploader, self.hide_author_column)
-        # exec() blocks the user from clicking the main MO2 window until they finish with the dialog
+        dialog = SettingsDialog(self.use_uploader, self.hide_author_column)
+
         if dialog.exec(): 
-            new_key = dialog.api_key_input.text().strip()
             new_use_uploader = dialog.use_uploader_checkbox.isChecked()
             force_requery = dialog.force_requery_checkbox.isChecked()
             hide_author_column = dialog.hide_author_column.isChecked()
-            self.key_validated = dialog.key_validated
-
-            if new_key != self.api_key and self.key_validated:
-                self.api_key = new_key
-                self._organizer.setPluginSetting(self.name(), "api_key", new_key)
-                print("ModAuthorColumn API Key updated.")
+            reset_widths = dialog.reset_widths.isChecked()
             
             if new_use_uploader != self.use_uploader:
                 self.use_uploader = new_use_uploader
@@ -158,6 +148,7 @@ class ModAuthorColumn(mobase.IPluginTool):
                 self._table.blockSignals(False)
                 self._table_wrapper.setFixedWidth(table_width)
                 self._save_column_width(0, DEFAULT_MOD_NAME_COL_WIDTH)
+                self._save_column_width(1, DEFAULT_AUTHOR_NAME_COL_WIDTH)
         return
 
     def tr(self, str):
@@ -165,21 +156,21 @@ class ModAuthorColumn(mobase.IPluginTool):
 
     def __init__(self):
         super(ModAuthorColumn, self).__init__()
-        self.manager = QNetworkAccessManager()
-        self.manager.finished.connect(self._on_request_finished)
-        self.base_url: str = NEXUS_API_URL
         self._requested_mods = set()
 
     def init(self, organiser=mobase.IOrganizer):
         self._organizer = organiser
         self._organizer.onUserInterfaceInitialized(self._onUserInterfaceInitialized)
-        self.api_key = self._organizer.pluginSetting(self.name(), "api_key")
         self.use_uploader = self._organizer.pluginSetting(self.name(), "UseUploader")
         self.hide_author_column = self._organizer.pluginSetting(self.name(), "HideAuthorColumn")
         self._organizer.onPluginSettingChanged(self._onPluginSettingChanged)
         self._organizer.onPluginDisabled(self._onPluginDisabled)
         self._organizer.onPluginEnabled(self._onPluginEnabled)
         self._organizer.modList().onModInstalled(self._onModInstalled)
+
+        self._bridge = self._organizer.createNexusBridge()
+        self._bridge.descriptionAvailable.connect(self._on_request_finished)
+        self._bridge.requestFailed.connect(self._on_request_failed)
         return True
 
     # My Methods
@@ -212,24 +203,6 @@ class ModAuthorColumn(mobase.IPluginTool):
     def _onPluginEnabled(self, plugin:mobase.IPlugin):
         if self.name() == plugin.name():
             self._hide_table(self.hide_author_column)
-
-    def _check_api_key_on_startup(self):
-        if not self._organizer.isPluginEnabled(self.name()):
-            return
-        if not self.api_key:
-            self._prompt_for_api_key("API Key missing!\n\nPlease enter your Nexus Mods API key to fetch mod authors.")
-            return
-
-        request = QNetworkRequest(QUrl(f"{self.base_url}/v1/users/validate.json"))
-        request.setRawHeader(b"User-Agent", b"ModAuthorColumn/1.0")
-        request.setRawHeader(b"apikey", self.api_key.encode('utf-8'))
-        request.setRawHeader(b"accept", b"application/json")
-        reply = self.manager.get(request)
-        reply.setProperty("req_type", "startup_validation")
-
-    def _prompt_for_api_key(self, message: str):
-        QMessageBox.warning(None, "ModAuthorColumn - API Key Issue", message)
-        self.display()
 
     def _onUserInterfaceInitialized(self, main_window: QMainWindow):
         central_widget = self._parentWidget().findChild(QWidget, 'centralWidget')
@@ -306,7 +279,6 @@ class ModAuthorColumn(mobase.IPluginTool):
 
         parent_layout.insertWidget(idx, container, original_stretch)
 
-        self._check_api_key_on_startup()
         self._hide_table(self.hide_author_column)
 
     def _on_table_width_changed(self, width: int):
@@ -335,83 +307,40 @@ class ModAuthorColumn(mobase.IPluginTool):
 
     # data helpers
 
-    def _get_author_from_api(self, game_name, mod_id, mod_name, ini_path):
-        request = QNetworkRequest(QUrl(f"{self.base_url}/v1/games/{game_name}/mods/{mod_id}.json"))
-        request.setRawHeader(b"User-Agent", b"ModAuthorColumn/1.0")
-        request.setRawHeader(b"apikey", self.api_key.encode('utf-8'))
-        request.setRawHeader(b"accept", b"application/json")
+    def _get_author_from_nexus(self, game_name, mod_id, mod_name, ini_path):
         self._requested_mods.add(mod_name)
-        reply = self.manager.get(request)
-        reply.setProperty("mo2_mod_name", mod_name) 
-        reply.setProperty("ini_path", ini_path)
-        return reply
+        self._bridge.requestDescription(game_name, mod_id, (mod_name, ini_path))
+        return
 
-    def _on_request_finished(self, reply: QNetworkReply):
-        if reply.property("req_type") == "startup_validation":
-            status_code = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
-            if ((reply.error() != QNetworkReply.NetworkError.NoError or status_code != 200)
-                and status_code is not None):
-                self.key_validated = False
-                self._prompt_for_api_key("Your Nexus Mods API key failed to validate.\nIt may be invalid, expired, or you are offline.\n\nPlease update it.")
-            elif status_code == None:
-                self.key_validated = False
-                print("ModAuthorColumn: No internet connection.")
-            else:
-                self.key_validated = True
-                self._load_authors()
-                print("ModAuthorColumn: API key successfully validated in the background.")
-            reply.deleteLater()
-            return
-        
-        mod_name = reply.property("mo2_mod_name")
-        if mod_name is None:
-            reply.deleteLater()
-            return
-        
-        author = None    
-        uploaded_by = None
-        if reply.error() == QNetworkReply.NetworkError.NoError:
-            response_data = reply.readAll().data().decode('utf-8')
-            
-            try:
-                json_data = json.loads(response_data)
-                
-                author = json_data.get("author", UNKNOWN_AUTHOR)
-                #name = json_data.get("name", "Unknown Mod Name")
-                uploaded_by = json_data.get("uploaded_by", UNKNOWN_AUTHOR)
+    def _on_request_finished(self, *args):
+        # args: 0:game_name, 1:mod_id, 2:user_data(mod_name, ini_path), 3:nexus json data
+        mod_name = args[2][0]
+        ini_path = args[2][1]
+        description:dict = args[3]
+        author = description.get('author', UNKNOWN_AUTHOR)
+        uploaded_by = description.get('uploaded_by', UNKNOWN_AUTHOR)
 
-                if self.use_uploader:
-                    self._mod_authors[mod_name] = uploaded_by
-                else:
-                    self._mod_authors[mod_name] = author
-
-                #print(f"Mod Name: {name}\nMod Author: {author}]\nMod Uploader: {uploadedby}")
-
-                # Save the author back to the mod's meta.ini so we don't need to re-request it from Nexus.
-                ini_path = reply.property("ini_path")
-                if ini_path:
-                    ini = configparser.ConfigParser()
-                    ini.read(ini_path, encoding='utf-8')
-                    if not ini.has_section("ModAuthorColumn"):
-                        ini.add_section("ModAuthorColumn")
-                    ini.set("ModAuthorColumn", "author", author)
-                    ini.set("ModAuthorColumn", "uploader", uploaded_by)
-                    try:
-                        with open(ini_path, "w", encoding="utf-8") as f:
-                            ini.write(f)
-                    except OSError as exc:
-                        print(f"ModAuthorColumn: Failed to write author to {ini_path}: {exc}")
-
-            except json.JSONDecodeError:
-                print("ModAuthorColumn Error: Failed to parse JSON response.")
+        if self.use_uploader:
+            self._mod_authors[mod_name] = uploaded_by
         else:
-            print(f"ModAuthorColumn Network Error: {reply.errorString()}, {str(reply.error())}")
-            
-        reply.deleteLater()
+            self._mod_authors[mod_name] = author
+
+        # Save the author back to the mod's meta.ini so we don't need to re-request it from Nexus.
+        ini = configparser.ConfigParser()
+        ini.read(ini_path, encoding='utf-8')
+        if not ini.has_section("ModAuthorColumn"):
+            ini.add_section("ModAuthorColumn")
+        ini.set("ModAuthorColumn", "author", author)
+        ini.set("ModAuthorColumn", "uploader", uploaded_by)
+        try:
+            with open(ini_path, "w", encoding="utf-8") as f:
+                ini.write(f)
+        except OSError as exc:
+            print(f"ModAuthorColumn: Failed to write author to {ini_path}: {exc}")
 
         self._requested_mods.discard(mod_name)
 
-        if (author is not None or uploaded_by is not None) and getattr(self, "_table", None) is not None:
+        if (author is not UNKNOWN_AUTHOR or uploaded_by is not UNKNOWN_AUTHOR) and getattr(self, "_table", None) is not None:
             row = self._table.find_row_for_internal_name(mod_name)
             if row is not None:
                 self._table.update_row_display(row)
@@ -420,6 +349,12 @@ class ModAuthorColumn(mobase.IPluginTool):
             self._table.resize_columns()
             print("ModAuthorColumn: Querying of Mods Complete")
         return
+
+    
+    def _on_request_failed(self, *args):
+        #args: game_name, mod_id, idk 0, user_data, idk 0, error message
+        self._requested_mods.discard(args[3][0])
+        print(f"ModAuthorColumn: Nexus Request Failed: {args[5]}")
 
     def _get_author(self, mod_handle:mobase.IModInterface, force_request=False):
         if mod_handle.isOverwrite() or mod_handle.isSeparator():
@@ -442,8 +377,7 @@ class ModAuthorColumn(mobase.IPluginTool):
                     self._mod_authors[mod_name] = author
                 else:
                     self._mod_authors[mod_name] = uploader
-        if not self.api_key or not self.key_validated:
-            return
+
         if author == UNKNOWN_AUTHOR or uploader == UNKNOWN_AUTHOR or force_request:
             mod_id = mod_handle.nexusId()
             #Not a queriable nexus mod
@@ -462,9 +396,7 @@ class ModAuthorColumn(mobase.IPluginTool):
                 game_name = game_plugin.gameNexusName()
                 self.internal_to_nexus_game_names[internal_name] = game_name
 
-            reply = self._get_author_from_api(game_name, mod_id, mod_name, mod_ini_path)
-            if not reply:
-                self._requested_mods.remove(mod_name)
+            self._get_author_from_nexus(game_name, mod_id, mod_name, mod_ini_path)
 
     def _load_authors(self, force_request=False) -> dict:
         self._mod_authors:dict[str,str] = {mod: (UNKNOWN_AUTHOR if mod != "Overwrite" else mod) for mod in self._organizer.modList().allMods()}
