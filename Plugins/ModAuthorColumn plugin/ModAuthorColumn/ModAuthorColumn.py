@@ -24,6 +24,59 @@ if TYPE_CHECKING:
     from PyQt6.QtGui import QIcon
     from PyQt6.QtWidgets import QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy, QMessageBox
     from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
+class TableResizeHandle(QFrame):
+    def __init__(self, table, parent=None):
+        super().__init__(parent)
+        self._table:ModAuthorTreeView = table
+        self._dragging = False
+        self._start_x = 0
+        self._start_width = 0
+        self.setFixedWidth(3)
+        self.setCursor(Qt.CursorShape.SizeHorCursor)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+
+    def _global_x(self, event):
+        if hasattr(event, "globalPosition"):
+            return event.globalPosition().toPoint().x()
+        return event.globalPos().x()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self._start_x = self._global_x(event)
+            self._start_width = self._table.width()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._dragging:
+            delta = self._start_x - self._global_x(event)
+            col_width = self._table.columnWidth(1)
+            overhead = self._table._get_overhead()
+            if self._table._synced_to_modlist:
+                if self._start_width + delta > MINIMUM_COL_WIDTH:
+                    self._table.set_table_width(self._start_width + delta)
+                else:
+                    self._table.set_table_width(MINIMUM_COL_WIDTH)
+            else:
+                if self._start_width + delta > MINIMUM_COL_WIDTH + col_width + overhead:
+                    self._table.set_table_width(self._start_width + delta)
+                else:
+                    self._table.set_table_width(MINIMUM_COL_WIDTH + col_width + overhead)
+            if not self._table._synced_to_modlist:
+                self._table.setColumnWidth(1, col_width)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._dragging:
+            self._dragging = False
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
 
 class ModAuthorColumn(mobase.IPluginTool):
     key_validated = False
@@ -92,6 +145,19 @@ class ModAuthorColumn(mobase.IPluginTool):
             if force_requery:
                 print("Forcing re-query of all mods")
                 self._load_authors(True)
+
+            if reset_widths:
+                print("Resetting table widths")
+                self._table.blockSignals(True)
+                table_width = (DEFAULT_AUTHOR_NAME_COL_WIDTH + self._table._fullFrameWidth()
+                                if self._table._synced_to_modlist 
+                                else DEFAULT_TABLE_WIDTH + self._table._get_overhead())
+                self._table.setFixedWidth(table_width)
+                self._table.setColumnWidth(0, DEFAULT_MOD_NAME_COL_WIDTH)
+                self._table.setColumnWidth(1, DEFAULT_AUTHOR_NAME_COL_WIDTH)
+                self._table.blockSignals(False)
+                self._table_wrapper.setFixedWidth(table_width)
+                self._save_column_width(0, DEFAULT_MOD_NAME_COL_WIDTH)
         return
 
     def tr(self, str):
@@ -117,6 +183,18 @@ class ModAuthorColumn(mobase.IPluginTool):
         return True
 
     # My Methods
+
+    _COLUMN_WIDTH_KEYS = {0: "ModNameColumnWidth", 1: "AuthorColumnWidth"}
+
+    def _load_column_width(self, column: int):
+        key = self._COLUMN_WIDTH_KEYS.get(column)
+        value = self._organizer.persistent(self.name(), key, None)
+        return int(value) if value is not None else None
+
+    def _save_column_width(self, column: int, width: int):
+        key = self._COLUMN_WIDTH_KEYS.get(column)
+        if width != 0:
+            self._organizer.setPersistent(self.name(), key, width, sync=False)
 
     def _onPluginSettingChanged(self, *args):
         if not self.hide_author_column:
@@ -175,8 +253,10 @@ class ModAuthorColumn(mobase.IPluginTool):
         self._load_authors()
 
         self._modlist_widget.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-        self._table = ModAuthorTreeView(self._modlist_widget, self._current_modlist_order, self._get_author_text, self.tr)
+        self._table_wrapper = QWidget()
+        self._table_wrapper.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self._table = ModAuthorTreeView(self._modlist_widget, self._current_modlist_order, self._get_author_text, 
+                                        self.tr, self._load_column_width, self._save_column_width)
         self._table.modeChanged.connect(self._on_table_mode_changed)
 
         self._table.refresh_from_modlist()
@@ -199,14 +279,24 @@ class ModAuthorColumn(mobase.IPluginTool):
         self._scrollbar = self._modlist_widget.verticalScrollBar()
         self._modlist_widget.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        self._table_wrapper = QWidget()
-        table_wrapper_layout = QVBoxLayout(self._table_wrapper)
+        table_wrapper_layout = QStackedLayout(self._table_wrapper)
+        table_wrapper_layout.setStackingMode(QStackedLayout.StackingMode.StackAll)
         table_wrapper_layout.setContentsMargins(0, 0, 0, 0)
         table_wrapper_layout.setSpacing(0)
-        table_wrapper_layout.addWidget(self._table)
-        table_wrapper_layout.addWidget(self._resync_button)
-        
-        self._table_wrapper.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+
+        # Thin draggable edge on the left side of the entire author table.
+        self._table_handle = TableResizeHandle(self._table, self._table_wrapper)
+
+        table_content = QWidget()
+        table_content_layout = QVBoxLayout(table_content)
+        table_content_layout.setContentsMargins(0, 0, 0, 0)
+        table_content_layout.setSpacing(0)
+        table_content_layout.addWidget(self._table)
+        table_content_layout.addWidget(self._resync_button)
+        table_wrapper_layout.addWidget(self._table_handle)
+        table_wrapper_layout.addWidget(table_content)
+
+        self._table.tableWidthChanged.connect(self._on_table_width_changed)
 
         self._modlist_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -218,6 +308,9 @@ class ModAuthorColumn(mobase.IPluginTool):
 
         self._check_api_key_on_startup()
         self._hide_table(self.hide_author_column)
+
+    def _on_table_width_changed(self, width: int):
+        self._table_wrapper.setFixedWidth(width)
 
     def _on_table_mode_changed(self, synced: bool):
         if synced:

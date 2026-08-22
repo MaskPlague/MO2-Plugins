@@ -1,18 +1,46 @@
-from .Global import UNKNOWN_AUTHOR
+from .Global import (UNKNOWN_AUTHOR, MINIMUM_COL_WIDTH, 
+                     DEFAULT_MOD_NAME_COL_WIDTH, DEFAULT_AUTHOR_NAME_COL_WIDTH)
 try:
     from PyQt6.QtCore import Qt, QModelIndex, QPersistentModelIndex, QTimer, QItemSelectionModel, QItemSelection, pyqtSignal
     from PyQt6.QtGui import QColor, QStandardItemModel, QStandardItem
-    from PyQt6.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate
+    from PyQt6.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView
 except ImportError:
     from PyQt5.QtCore import Qt, QModelIndex, QPersistentModelIndex, QTimer, QItemSelectionModel, QItemSelection, pyqtSignal
     from PyQt5.QtGui import QColor, QStandardItemModel, QStandardItem
-    from PyQt5.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate
+    from PyQt5.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from PyQt6.QtCore import Qt, QModelIndex, QPersistentModelIndex, QTimer, QItemSelectionModel, QItemSelection, pyqtSignal
     from PyQt6.QtGui import QColor, QStandardItemModel, QStandardItem
-    from PyQt6.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate
-    
+    from PyQt6.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView
+
+#Prevent right most column from being click dragged
+class LockedEdgeHeader(QHeaderView):
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.min_width = 100
+        self.setMinimumSectionSize(self.min_width)
+        self.setStretchLastSection(False)
+        self.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+
+    def mousePressEvent(self, event):
+        if self.is_on_last_outer_edge(event.position().x()):
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.is_on_last_outer_edge(event.position().x()):
+            #self.setCursor(Qt.CursorShape.ArrowCursor)
+            return
+        super().mouseMoveEvent(event)
+
+    def is_on_last_outer_edge(self, mouse_x):
+        count = self.count()
+        if count <= 0:
+            return False
+        last_col_right_edge = sum(self.sectionSize(i) for i in range(count))
+        return abs(mouse_x - last_col_right_edge) <= 4
+
 class SyncHeightDelegate(QStyledItemDelegate):
     def __init__(self, modlist_widget, parent=None):
         super().__init__(parent)
@@ -30,23 +58,26 @@ class ModAuthorTreeView(QTreeView):
     _INTERNAL_NAME_ROLE = Qt.ItemDataRole.UserRole + 1
 
     modeChanged = pyqtSignal(bool)
+    tableWidthChanged = pyqtSignal(int)
 
     def __init__(self:QTreeView, modlist_widget: QTreeView, 
                  order_provider, author_lookup, tr_func, 
-                 width_synced: int = 160, width_detached: int = 300, max_column_widths: dict = None, 
+                 load_column_width, save_column_width,
+                 width_detached: int = 300,
                  parent=None):
         super().__init__(parent)
         self._modlist_widget = modlist_widget
         self._order_provider = order_provider
         self._author_lookup = author_lookup
         self._tr = tr_func
+        self._load_column_width = load_column_width
+        self._save_column_width = save_column_width
 
-        self._width_synced = width_synced
         self._width_detached = width_detached
-        self.max_column_widths = max_column_widths or {0: 500, 1: 150}
 
         self._sync_lock = False
         self._synced_to_modlist = True
+        self._changing_modes = False
         self._sort_order = Qt.SortOrder.AscendingOrder
 
         self.setObjectName("ModAuthorColumnTree")
@@ -58,18 +89,26 @@ class ModAuthorTreeView(QTreeView):
         self._model.setHorizontalHeaderLabels([self._tr("Mod Name"), self._tr("Author")])
         self.setModel(self._model)
 
-        self.header().setStretchLastSection(True)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(self._modlist_widget.selectionMode())
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setAlternatingRowColors(True)
+
+        self.locked_header = LockedEdgeHeader(Qt.Orientation.Horizontal, self)
+        self.setHeader(self.locked_header)
         self.header().setHighlightSections(False)
         self.header().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._is_adjusting = False
+
+        self.header().setMinimumSectionSize(MINIMUM_COL_WIDTH)
+        self.header().setStretchLastSection(False)
+        self.header().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+
         self.setRootIsDecorated(False)
         self.setUniformRowHeights(True)
         self.setItemsExpandable(False)
 
-        self.header().sectionResized.connect(self._enforce_max_width)
+        self.header().sectionResized.connect(self._onSectionResize)
 
         self.setFrameShape(self._modlist_widget.frameShape())
         self.setContentsMargins(0, 0, 0, 0)
@@ -79,9 +118,11 @@ class ModAuthorTreeView(QTreeView):
 
         self.header().setMinimumHeight(self._modlist_widget.header().minimumHeight())
         self.header().setMaximumHeight(self._modlist_widget.header().maximumHeight())
+        
 
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setFixedWidth(self._width_synced)
+        self._restore_column_widths()
+        self.set_table_width(self.columnWidth(1))
 
         self.header().sectionClicked.connect(self._on_header_clicked)
         self.doubleClicked.connect(self._on_cell_clicked)
@@ -92,17 +133,83 @@ class ModAuthorTreeView(QTreeView):
         self._connect_collapse_sync()
         self._connect_separator_color_polling()
 
+    def _fullFrameWidth(self):
+        return self.frameWidth() * 2
+
+    def _get_overhead(self):
+        scrollbar_width = self.verticalScrollBar().sizeHint().width()
+        return self._fullFrameWidth() + scrollbar_width
+
+    def set_table_width(self, width: int):
+        self.setFixedWidth(width)
+        if self._synced_to_modlist:
+            self.setColumnWidth(1, width)
+        else:
+            w1 = self.columnWidth(1)
+            w0 = width - w1 - self._get_overhead()
+            self.setColumnWidth(0, w0)
+        self.tableWidthChanged.emit(width)
+
     @property
     def is_synced(self) -> bool:
         return self._synced_to_modlist
 
-    def _enforce_max_width(self, index, old_size, new_size):
-        if index in self.max_column_widths:
-            max_width = self.max_column_widths[index]
-            if new_size > max_width:
-                self.header().blockSignals(True)
-                self.setColumnWidth(index, max_width)
-                self.header().blockSignals(False)
+    def _load_width(self, column: int):
+        return self._load_column_width(column)
+
+    def _save_width(self, column: int, width: int):
+        self._save_column_width(column, width)
+
+    def _restore_column_widths(self):
+        for column in (0, 1):
+            saved = self._load_width(column)
+            if saved is not None:
+                self.setColumnWidth(column, saved)
+
+    def _onSectionResize(self, index, old_size, new_size):
+        if self._is_adjusting or self._changing_modes or self.header().count() <= 1 or new_size == 0:
+            return
+        
+        self._is_adjusting = True
+        
+        max_width = self.viewport().width()
+        col_count = self.header().count()
+        
+        # 1. Calculate space used by all columns to the LEFT of the one being dragged
+        left_space = sum(self.header().sectionSize(i) for i in range(index))
+        
+        # 2. Calculate the absolute maximum size this dragged column can physically take
+        # (Assuming all columns to its right are squished to their minimum widths)
+        remaining_right_cols = col_count - 1 - index
+        max_possible_size = max_width - left_space - (remaining_right_cols * MINIMUM_COL_WIDTH)
+        
+        # Cap the dragged column if it tries to push too far right
+        if new_size > max_possible_size:
+            new_size = max_possible_size
+            self.header().resizeSection(index, int(new_size))
+            
+        # 3. Dynamically steal/give space to the columns to the RIGHT
+        current_left_total = left_space + new_size
+        remaining_budget = max_width - current_left_total
+        
+        # Distribute the remaining pixel budget among the right-side columns
+        for i in range(index + 1, col_count):
+            if i == col_count - 1:
+                # The very last column consumes whatever exact pixels remain to perfectly hit the border
+                target_size = max(MINIMUM_COL_WIDTH, remaining_budget)
+            else:
+                # Proportional or standard assignment for middle columns
+                target_size = self.header().sectionSize(i)
+                if remaining_budget < (col_count - i) * MINIMUM_COL_WIDTH:
+                    target_size = MINIMUM_COL_WIDTH
+                remaining_budget -= target_size
+                
+            self.header().resizeSection(i, int(target_size))
+            
+        self._is_adjusting = False
+        if index == 0:
+            self._save_width(1, self.columnWidth(1))
+        self._save_width(index, new_size)
 
     # populating / repopulating the table
 
@@ -131,8 +238,9 @@ class ModAuthorTreeView(QTreeView):
         return [self._model.item(row, 0).text() for row in range(self._model.rowCount())]
 
     def resize_columns(self: QTreeView):
-        self.resizeColumnToContents(0)
-        self.resizeColumnToContents(1)
+        for column in (0, 1):
+            if self._load_width(column) is None:
+                self.resizeColumnToContents(column)
 
     # separator detection + row rendering
 
@@ -336,31 +444,46 @@ class ModAuthorTreeView(QTreeView):
         self._model.sort(logical_index, self._sort_order)
         self.apply_row_visibility()
 
-    def _compute_detached_width(self) -> int:
-        self.resizeColumnToContents(0)
-        self.resizeColumnToContents(1)
-        mod_name_width = self.columnWidth(0)
-        author_width = self.columnWidth(1)
-        frame = self.frameWidth() * 2
-        scrollbar_width = self.verticalScrollBar().sizeHint().width()
-        content_width = mod_name_width + author_width + frame + scrollbar_width + 8
-        return max(self._width_detached, min(content_width, 550))
+    def _detached_layout(self) -> tuple[int, int, int]:
+        overhead = self._get_overhead()
+
+        saved_author = self._load_width(1)
+        
+        author_width = saved_author if saved_author is not None else DEFAULT_AUTHOR_NAME_COL_WIDTH
+
+        saved_mod_name = self._load_width(0)
+        mod_name_width = saved_mod_name if saved_mod_name is not None else DEFAULT_MOD_NAME_COL_WIDTH
+
+        total_width = mod_name_width + author_width + overhead
+
+        return total_width, mod_name_width, author_width
 
     def enter_detached_mode(self):
-        self._synced_to_modlist = False
+        self._changing_modes = True
+        total_width, mod_name_width, author_width = self._detached_layout()
         self.setColumnHidden(0, False)  # show Mod Name so you can see what's sorted
-        self.setFixedWidth(self._compute_detached_width())
-        self.resize_columns()
+        # Set explicitly rather than resize_columns(): resizeColumnToContents
+        # would re-expand Mod Name to its full content width and push Author
+        # back out of view.
+        print(f"{total_width=}, {mod_name_width=}, {author_width=}")
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.set_table_width(total_width)
+        self.setColumnWidth(0, mod_name_width)
+        self.setColumnWidth(1, author_width)
+        self._synced_to_modlist = False
         self.modeChanged.emit(False)
+        self._changing_modes = False
 
     def enter_synced_mode(self):
-        self._synced_to_modlist = True
-        self.setFixedWidth(max(self._width_synced, self.columnWidth(1)))
+        self._changing_modes = True
+        self._save_width(0, self.columnWidth(0))
+        self.set_table_width(self.columnWidth(1) + self._fullFrameWidth())
         self.setColumnHidden(0, True)
         self.refresh_from_modlist()
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._synced_to_modlist = True
         self.modeChanged.emit(True)
+        self._changing_modes = False
 
     # scroll sync
 
