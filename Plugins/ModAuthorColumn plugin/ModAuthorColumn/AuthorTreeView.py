@@ -1,19 +1,18 @@
 from .Global import (UNKNOWN_AUTHOR, MINIMUM_COL_WIDTH, 
                      DEFAULT_MOD_NAME_COL_WIDTH, DEFAULT_AUTHOR_NAME_COL_WIDTH)
-
 try:
     from PyQt6.QtCore import Qt, QModelIndex, QPersistentModelIndex, QTimer, QItemSelectionModel, QItemSelection, pyqtSignal
     from PyQt6.QtGui import QColor, QStandardItemModel, QStandardItem
-    from PyQt6.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView
+    from PyQt6.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView, QApplication
 except ImportError:
     from PyQt5.QtCore import Qt, QModelIndex, QPersistentModelIndex, QTimer, QItemSelectionModel, QItemSelection, pyqtSignal
     from PyQt5.QtGui import QColor, QStandardItemModel, QStandardItem
-    from PyQt5.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView
+    from PyQt5.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView, QApplication
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from PyQt6.QtCore import Qt, QModelIndex, QPersistentModelIndex, QTimer, QItemSelectionModel, QItemSelection, pyqtSignal
     from PyQt6.QtGui import QColor, QStandardItemModel, QStandardItem
-    from PyQt6.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView
+    from PyQt6.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView, QApplication
     
 
 #Prevent right most column from being click dragged
@@ -155,7 +154,6 @@ class ModAuthorTreeView(QTreeView):
 
         self.header().setMinimumHeight(self._modlist_widget.header().minimumHeight())
         self.header().setMaximumHeight(self._modlist_widget.header().maximumHeight())
-        
 
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._restore_column_widths()
@@ -169,6 +167,17 @@ class ModAuthorTreeView(QTreeView):
         self._connect_selection_sync()
         self._connect_collapse_sync()
         self._connect_separator_color_polling()
+        self._stealStyleSheet()
+
+    def _stealStyleSheet(self):
+        #Steal ModListView's stylesheet
+        style_sheet:str = QApplication.instance().styleSheet()
+        if style_sheet.startswith("file:///"):
+            path = style_sheet.replace("file:///", "")
+            with open(path, 'r', encoding='utf-8') as f:
+                style_sheet = f.read()
+        style_sheet = style_sheet.replace("ModListView", "ModAuthorTreeView")
+        self.setStyleSheet(style_sheet)
 
     def _fullFrameWidth(self):
         return self.frameWidth() * 2
