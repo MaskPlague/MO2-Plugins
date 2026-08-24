@@ -1,5 +1,6 @@
 from .Global import (UNKNOWN_AUTHOR, MINIMUM_COL_WIDTH, 
                      DEFAULT_MOD_NAME_COL_WIDTH, DEFAULT_AUTHOR_NAME_COL_WIDTH)
+
 try:
     from PyQt6.QtCore import Qt, QModelIndex, QPersistentModelIndex, QTimer, QItemSelectionModel, QItemSelection, pyqtSignal
     from PyQt6.QtGui import QColor, QStandardItemModel, QStandardItem
@@ -13,6 +14,7 @@ if TYPE_CHECKING:
     from PyQt6.QtCore import Qt, QModelIndex, QPersistentModelIndex, QTimer, QItemSelectionModel, QItemSelection, pyqtSignal
     from PyQt6.QtGui import QColor, QStandardItemModel, QStandardItem
     from PyQt6.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView
+    
 
 #Prevent right most column from being click dragged
 class LockedEdgeHeader(QHeaderView):
@@ -52,6 +54,32 @@ class SyncHeightDelegate(QStyledItemDelegate):
         size.setHeight(h if h > 0 else 22)
         return size
 
+    def displayText(self, value, locale):
+        if value == '':
+            value = UNKNOWN_AUTHOR
+        return super().displayText(value, locale)
+
+class ModAuthorItem(QStandardItem):
+    _persistent_index: QPersistentModelIndex = None
+    def __init__(self, other, persistent_index, save_user_set_name,):
+        self._persistent_index = persistent_index
+        self._save_user_set_name = save_user_set_name
+        super().__init__(other)
+
+    #if user sets data then save it to ini, if user deleted data then it will delete saved info and clear text
+    def setData(self, value, role):
+        if Qt.ItemDataRole.EditRole == role:
+            mod_name = self._persistent_index.data(Qt.ItemDataRole.DisplayRole)
+            value = value.strip()
+            value = self._save_user_set_name(mod_name, value)
+            if not value:
+                value = ''
+        return super().setData(value, role)
+
+    #in ModAuthorColumn, saves set_name to mod_name's ini file as usersetauthor or usersetuploader
+    def _save_user_set_name(self, mod_name, set_name):
+        pass
+
 class ModAuthorTreeView(QTreeView):
     # Second data role on column 0's item: the internal MO2 mod name
     # (Qt.UserRole already holds the QPersistentModelIndex).
@@ -63,7 +91,8 @@ class ModAuthorTreeView(QTreeView):
     def __init__(self:QTreeView, modlist_widget: QTreeView, 
                  order_provider, author_lookup, tr_func, 
                  load_column_width, save_column_width,
-                 width_detached: int = 300,
+                 save_user_set_name,
+                 context_menu,
                  parent=None):
         super().__init__(parent)
         self._modlist_widget = modlist_widget
@@ -72,13 +101,16 @@ class ModAuthorTreeView(QTreeView):
         self._tr = tr_func
         self._load_column_width = load_column_width
         self._save_column_width = save_column_width
-
-        self._width_detached = width_detached
+        self._save_user_set_name = save_user_set_name
 
         self._sync_lock = False
         self._synced_to_modlist = True
         self._changing_modes = False
+        self._refresh_pending = False
         self._sort_order = Qt.SortOrder.AscendingOrder
+
+        self._internal_name_to_row: dict = {}
+        self._persistent_index_to_row: dict = {}
 
         self.setObjectName("ModAuthorColumnTree")
         self._height_delegate = SyncHeightDelegate(self._modlist_widget, self)
@@ -86,18 +118,22 @@ class ModAuthorTreeView(QTreeView):
 
         self._model = QStandardItemModel()
         self._model.setColumnCount(2)
-        self._model.setHorizontalHeaderLabels([self._tr("Mod Name"), self._tr("Author")])
+        self._model.setHorizontalHeaderLabels([self.tr("Mod Name"), self.tr("Author")])
         self.setModel(self._model)
 
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(self._modlist_widget.selectionMode())
-        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+
+        self.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
+
         self.setAlternatingRowColors(True)
 
         self.locked_header = LockedEdgeHeader(Qt.Orientation.Horizontal, self)
         self.setHeader(self.locked_header)
         self.header().setHighlightSections(False)
         self.header().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.header().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.header().customContextMenuRequested.connect(context_menu)
         self._is_adjusting = False
 
         self.header().setMinimumSectionSize(MINIMUM_COL_WIDTH)
@@ -111,7 +147,8 @@ class ModAuthorTreeView(QTreeView):
         self.header().sectionResized.connect(self._onSectionResize)
 
         self.setFrameShape(self._modlist_widget.frameShape())
-        self.setContentsMargins(0, 0, 0, 0)
+        margins = self._modlist_widget.contentsMargins()
+        self.setContentsMargins(margins)
         self.setSortingEnabled(False)  # we sort manually
         self.header().setSectionsClickable(True)  # still need to be able to click the section to sort manually
         self.setColumnHidden(0, True)  # hidden while synced; shown while detached
@@ -219,16 +256,24 @@ class ModAuthorTreeView(QTreeView):
 
     def populate_in_order(self, display_names: list, internal_names: list, indexes: list):
         self._model.setRowCount(len(display_names))
+        self._internal_name_to_row = {}
+        self._persistent_index_to_row = {}
         for row, display_name in enumerate(display_names):
             name_item = QStandardItem(display_name)
             if row < len(indexes) and indexes[row] is not None:
-                name_item.setData(indexes[row], Qt.ItemDataRole.UserRole)
+                persistent_index = indexes[row]
+                name_item.setData(persistent_index, Qt.ItemDataRole.UserRole)
+                self._persistent_index_to_row[persistent_index] = row
             if row < len(internal_names):
-                name_item.setData(internal_names[row], self._INTERNAL_NAME_ROLE)
+                internal_name = internal_names[row]
+                name_item.setData(internal_name, self._INTERNAL_NAME_ROLE)
+                self._internal_name_to_row[internal_name] = row
 
-            author_item = QStandardItem("")
+            author_item = ModAuthorItem("", persistent_index, self._save_user_set_name)
             author_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
+            name_item.setEditable(False)
+            author_item.setEditable(True)
             self._model.setItem(row, 0, name_item)
             self._model.setItem(row, 1, author_item)
             self.update_row_display(row)
@@ -311,12 +356,14 @@ class ModAuthorTreeView(QTreeView):
 
         author_item = self._model.item(row, 1)
         if author_item is None:
-            author_item = QStandardItem()
+            author_item = ModAuthorItem("", persistent_index, self._save_user_set_name)
             self._model.setItem(row, 1, author_item)
         author_text = self._format_author_cell_text(display_name, internal_name, persistent_index, is_sep)
         author_item.setText(author_text)
-        if author_text != UNKNOWN_AUTHOR:
+        if author_text != None:
             author_item.setToolTip(author_text)
+        if is_sep:
+            author_item.setEditable(False)
         self._apply_row_colors(row)
 
     def sync_separator_colors(self):
@@ -331,23 +378,10 @@ class ModAuthorTreeView(QTreeView):
                 self._apply_row_colors(row)
 
     def find_row_for_index(self, persistent: QPersistentModelIndex):
-        for row in range(self._model.rowCount()):
-            item0 = self._model.item(row, 0)
-            if item0 is None:
-                continue
-            stored = item0.data(Qt.ItemDataRole.UserRole)
-            if stored is not None and stored == persistent:
-                return row
-        return None
+        return self._persistent_index_to_row.get(persistent)
 
     def find_row_for_internal_name(self, internal_name: str):
-        for row in range(self._model.rowCount()):
-            item0 = self._model.item(row, 0)
-            if item0 is None:
-                continue
-            if item0.data(self._INTERNAL_NAME_ROLE) == internal_name:
-                return row
-        return None
+        return self._internal_name_to_row.get(internal_name)
 
     def _refresh_row_text_for_index(self, idx: QModelIndex):
         row = self.find_row_for_index(QPersistentModelIndex(idx))
@@ -405,9 +439,27 @@ class ModAuthorTreeView(QTreeView):
         model = self._modlist_widget.model()
         if not model:
             return
-        model.layoutChanged.connect(self._on_modlist_reordered)
-        model.modelReset.connect(self._on_modlist_reordered)
-        model.rowsMoved.connect(lambda *_: self._on_modlist_reordered())
+        model.layoutChanged.connect(self._schedule_refresh)
+        model.rowsRemoved.connect(self._schedule_refresh)
+        model.rowsInserted.connect(self._schedule_refresh)
+        model.modelReset.connect(self._schedule_refresh)
+        model.rowsMoved.connect(self._schedule_refresh)
+
+    def _schedule_refresh(self, *args):
+        if self._refresh_pending:
+            return
+        self._refresh_pending = True
+        QTimer.singleShot(0, self._flush_refresh)
+
+    def _flush_refresh(self):
+        self._refresh_pending = False
+        if self._sync_lock:
+            return
+        self._sync_lock = True
+        try:
+            self.refresh_from_modlist()
+        finally:
+            self._sync_lock = False
 
     def _connect_separator_color_polling(self):
         # model.dataChanged never fires for MO2's modlist due to whatever they're
@@ -416,15 +468,6 @@ class ModAuthorTreeView(QTreeView):
         self._separator_color_timer.setInterval(1000)
         self._separator_color_timer.timeout.connect(self.sync_separator_colors)
         self._separator_color_timer.start()
-
-    def _on_modlist_reordered(self):
-        if self._sync_lock or not self._synced_to_modlist:
-            return
-        self._sync_lock = True
-        try:
-            self.refresh_from_modlist()
-        finally:
-            self._sync_lock = False
 
     # author column header click, sort by author column
 
@@ -442,7 +485,22 @@ class ModAuthorTreeView(QTreeView):
             else Qt.SortOrder.AscendingOrder
         )
         self._model.sort(logical_index, self._sort_order)
+        self._rebuild_row_indexes()
         self.apply_row_visibility()
+
+    def _rebuild_row_indexes(self):
+        self._internal_name_to_row = {}
+        self._persistent_index_to_row = {}
+        for row in range(self._model.rowCount()):
+            item0 = self._model.item(row, 0)
+            if item0 is None:
+                continue
+            internal_name = item0.data(self._INTERNAL_NAME_ROLE)
+            if internal_name is not None:
+                self._internal_name_to_row[internal_name] = row
+            persistent_index = item0.data(Qt.ItemDataRole.UserRole)
+            if persistent_index is not None:
+                self._persistent_index_to_row[persistent_index] = row
 
     def _detached_layout(self) -> tuple[int, int, int]:
         overhead = self._get_overhead()
@@ -462,10 +520,6 @@ class ModAuthorTreeView(QTreeView):
         self._changing_modes = True
         total_width, mod_name_width, author_width = self._detached_layout()
         self.setColumnHidden(0, False)  # show Mod Name so you can see what's sorted
-        # Set explicitly rather than resize_columns(): resizeColumnToContents
-        # would re-expand Mod Name to its full content width and push Author
-        # back out of view.
-        print(f"{total_width=}, {mod_name_width=}, {author_width=}")
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.set_table_width(total_width)
         self.setColumnWidth(0, mod_name_width)
