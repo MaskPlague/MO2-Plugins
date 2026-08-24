@@ -28,9 +28,10 @@ if TYPE_CHECKING:
                                   QFrame, QStackedLayout, QMenu, QApplication, QCheckBox, QWidgetAction)
 
 class EventFilter(QObject):
-    def __init__(self, isHidden, setHideAuthorColumn, model: QSortFilterProxyModel):
+    def __init__(self, isHidden, setHideAuthorColumn, get_header_text, model: QSortFilterProxyModel):
         self._isHidden = isHidden
         self._setHideAuthorColumn = setHideAuthorColumn
+        self._header_text = get_header_text
         self._model = model
         super().__init__()
 
@@ -46,7 +47,7 @@ class EventFilter(QObject):
                     if not is_checkBox or not is_widgetAction:
                         return False
                 checkBox = QCheckBox()
-                checkBox.setText(self.tr("Author"))
+                checkBox.setText(self._get_header_text())
                 checkBox.setChecked(not self._isHidden())
 
                 widgetAction = QWidgetAction(obj)
@@ -63,6 +64,9 @@ class EventFilter(QObject):
 
     def _setHideAuthorColumn(self, value):
         return
+
+    def _get_header_text(self):
+        return self._header_text()
 
 class TableResizeHandle(QFrame):
     def __init__(self, table, parent=None):
@@ -196,6 +200,7 @@ class ModAuthorColumn(mobase.IPluginTool):
         self._organizer.onUserInterfaceInitialized(self._onUserInterfaceInitialized)
         self.use_uploader = self._organizer.pluginSetting(self.name(), "UseUploader")
         self.hide_author_column = self._organizer.pluginSetting(self.name(), "HideAuthorColumn")
+        self._update_name_text()
         self._organizer.onPluginSettingChanged(self._onPluginSettingChanged)
         self._organizer.onPluginDisabled(self._onPluginDisabled)
         self._organizer.onPluginEnabled(self._onPluginEnabled)
@@ -222,42 +227,11 @@ class ModAuthorColumn(mobase.IPluginTool):
         self._save_column_width(0, DEFAULT_MOD_NAME_COL_WIDTH)
         self._save_column_width(1, DEFAULT_AUTHOR_NAME_COL_WIDTH)
 
-    def _reset_author_cache(self):
-        print("Resetting author cache")
-        self._mod_authors.clear()
-        for mod in self._organizer.modList().allMods():
-            mod_handle = self._organizer.modList().getMod(mod)
-            if mod_handle.isOverwrite() or mod_handle.isSeparator():
-                continue
-            mod_ini_path = os.path.join(mod_handle.absolutePath(), "meta.ini")
-            if os.path.exists(mod_ini_path):
-                ini = configparser.ConfigParser()
-                ini.read(mod_ini_path, encoding='utf-8')
-                if ini.has_section('ModAuthorColumn'):
-                    ini.remove_section('ModAuthorColumn')
-                    try:
-                        with open(mod_ini_path, "w", encoding="utf-8") as f:
-                            ini.write(f)
-                        print(f"ModAuthorColumn: Removed author cache for {mod_ini_path}")
-                    except OSError as exc:
-                        print(f"ModAuthorColumn: Failed to remove author cache in {mod_ini_path}: {exc}")
-
-    _COLUMN_WIDTH_KEYS = {0: "ModNameColumnWidth", 1: "AuthorColumnWidth"}
-
-    def _load_column_width(self, column: int):
-        key = self._COLUMN_WIDTH_KEYS.get(column)
-        value = self._organizer.persistent(self.name(), key, None)
-        return int(value) if value is not None else None
-
-    def _save_column_width(self, column: int, width: int):
-        key = self._COLUMN_WIDTH_KEYS.get(column)
-        if width != 0:
-            self._organizer.setPersistent(self.name(), key, width, sync=False)
-
     def _onPluginSettingChanged(self, *args):
         if not self.hide_author_column:
             self._load_authors()
             self._table.refresh_from_modlist()
+        self._update_name_text()
         self._hide_table(self.hide_author_column)
 
     def _setPluginSetting(self, key, value):
@@ -278,9 +252,6 @@ class ModAuthorColumn(mobase.IPluginTool):
         if self.name() == plugin.name():
             self._hide_table(self.hide_author_column)
 
-    def _isHidden(self):
-        return self.hide_author_column
-
     def _onUserInterfaceInitialized(self, main_window: QMainWindow):
         central_widget = self._parentWidget().findChild(QWidget, 'centralWidget')
         if not central_widget:
@@ -299,7 +270,7 @@ class ModAuthorColumn(mobase.IPluginTool):
             return
         self._modlist_widget = modlist_widget
 
-        self.event_filter = EventFilter(self._isHidden,self._setHideAuthorColumn, self._modlist_widget.model())
+        self.event_filter = EventFilter(self._isHidden, self._setHideAuthorColumn, self._get_header_text, self._modlist_widget.model())
         QApplication.instance().installEventFilter(self.event_filter)
 
         self._mod_authors: dict = {}
@@ -309,8 +280,8 @@ class ModAuthorColumn(mobase.IPluginTool):
         self._table_wrapper = QWidget()
         self._table_wrapper.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self._table = ModAuthorTreeView(self._modlist_widget, self._current_modlist_order, self._get_author_text, 
-                                        self.tr, self._load_column_width, self._save_column_width, self._save_user_set_name,
-                                        self._context_menu)
+                                        self._load_column_width, self._save_column_width, self._save_user_set_name,
+                                        self._context_menu, self.use_uploader)
         self._table.modeChanged.connect(self._on_table_mode_changed)
 
         self._table.refresh_from_modlist()
@@ -372,7 +343,7 @@ class ModAuthorColumn(mobase.IPluginTool):
             action.setDefaultWidget(checkbox)
             menu.addAction(action)
             return checkbox
-        visibility_checkBox = create_checkbox(self.tr("Show Author Col"), not self._isHidden())
+        visibility_checkBox = create_checkbox(self.tr("Show %1 Col").replace("%1", self._header_text), not self._isHidden())
         def _visibilityStateChanged(state):
             self._setHideAuthorColumn(state != Qt.CheckState.Checked)
         visibility_checkBox.checkStateChanged.connect(_visibilityStateChanged)
@@ -419,6 +390,49 @@ class ModAuthorColumn(mobase.IPluginTool):
 
     # data helpers
 
+    def _reset_author_cache(self):
+        print("Resetting author cache")
+        self._mod_authors.clear()
+        for mod in self._organizer.modList().allMods():
+            mod_handle = self._organizer.modList().getMod(mod)
+            if mod_handle.isOverwrite() or mod_handle.isSeparator():
+                continue
+            mod_ini_path = os.path.join(mod_handle.absolutePath(), "meta.ini")
+            if os.path.exists(mod_ini_path):
+                ini = configparser.ConfigParser()
+                ini.read(mod_ini_path, encoding='utf-8')
+                if ini.has_section('ModAuthorColumn'):
+                    ini.remove_section('ModAuthorColumn')
+                    try:
+                        with open(mod_ini_path, "w", encoding="utf-8") as f:
+                            ini.write(f)
+                        print(f"ModAuthorColumn: Removed author cache for {mod_ini_path}")
+                    except OSError as exc:
+                        print(f"ModAuthorColumn: Failed to remove author cache in {mod_ini_path}: {exc}")
+
+    _COLUMN_WIDTH_KEYS = {0: "ModNameColumnWidth", 1: "AuthorColumnWidth"}
+
+    def _load_column_width(self, column: int):
+        key = self._COLUMN_WIDTH_KEYS.get(column)
+        value = self._organizer.persistent(self.name(), key, None)
+        return int(value) if value is not None else None
+
+    def _save_column_width(self, column: int, width: int):
+        key = self._COLUMN_WIDTH_KEYS.get(column)
+        if width != 0:
+            self._organizer.setPersistent(self.name(), key, width, sync=False)
+
+    def _update_name_text(self):
+        self._header_text = self.tr("Author") if not self.use_uploader else self.tr("Uploader")
+        if hasattr(self, '_table') and self._table is not None:
+            self._table.model().setHorizontalHeaderLabels([self.tr("Mod Name"), self._header_text])
+
+    def _get_header_text(self):
+        return self._header_text
+
+    def _isHidden(self):
+        return self.hide_author_column
+
     def _get_author_from_nexus(self, game_name, mod_id, mod_name, ini_path):
         self._requested_mods.add(mod_name)
         self._bridge.requestDescription(game_name, mod_id, (mod_name, ini_path))
@@ -429,8 +443,9 @@ class ModAuthorColumn(mobase.IPluginTool):
             return set_name
         mod_handle = self._organizer.modList().getMod(mod_name)
         if mod_handle:
-            ini_path = os.path.join(mod_handle.absolutePath(), "meta.ini")
-            if os.path.exists(ini_path):
+            mod_path = mod_handle.absolutePath()
+            if os.path.exists(mod_path):
+                ini_path = os.path.join(mod_path, "meta.ini")
                 ini = configparser.ConfigParser()
                 ini.read(ini_path, encoding='utf-8')
                 if not ini.has_section("ModAuthorColumn"):
@@ -506,7 +521,7 @@ class ModAuthorColumn(mobase.IPluginTool):
         mod_ini_path = os.path.join(mod_handle.absolutePath(), "meta.ini")
         author = None
         uploader = None
-        if not force_request and os.path.exists(mod_ini_path):
+        if os.path.exists(mod_ini_path):
             ini = configparser.ConfigParser()
             ini.read(mod_ini_path, encoding='utf-8')
             if ini.has_section('ModAuthorColumn'):

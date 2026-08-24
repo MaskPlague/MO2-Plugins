@@ -88,16 +88,16 @@ class ModAuthorTreeView(QTreeView):
     tableWidthChanged = pyqtSignal(int)
 
     def __init__(self:QTreeView, modlist_widget: QTreeView, 
-                 order_provider, author_lookup, tr_func, 
+                 order_provider, author_lookup, 
                  load_column_width, save_column_width,
                  save_user_set_name,
                  context_menu,
+                 use_uploader,
                  parent=None):
         super().__init__(parent)
         self._modlist_widget = modlist_widget
         self._order_provider = order_provider
         self._author_lookup = author_lookup
-        self._tr = tr_func
         self._load_column_width = load_column_width
         self._save_column_width = save_column_width
         self._save_user_set_name = save_user_set_name
@@ -117,7 +117,10 @@ class ModAuthorTreeView(QTreeView):
 
         self._model = QStandardItemModel()
         self._model.setColumnCount(2)
-        self._model.setHorizontalHeaderLabels([self.tr("Mod Name"), self.tr("Author")])
+        if not use_uploader:
+            self._model.setHorizontalHeaderLabels([self.tr("Mod Name"), self.tr("Author")])
+        else:
+            self._model.setHorizontalHeaderLabels([self.tr("Mod Name"), self.tr("Uploader")])
         self.setModel(self._model)
 
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -156,6 +159,7 @@ class ModAuthorTreeView(QTreeView):
         self.header().setMaximumHeight(self._modlist_widget.header().maximumHeight())
 
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._restore_column_widths()
         self.set_table_width(self.columnWidth(1))
 
