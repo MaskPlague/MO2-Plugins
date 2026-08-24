@@ -15,15 +15,17 @@ try:
     from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy,
                                   QFrame, QStackedLayout, QMenu, QApplication, QCheckBox, QWidgetAction)
 except ImportError:
-    from PyQt5.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex
+    from PyQt5.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex, QObject, QEvent, QSortFilterProxyModel
     from PyQt5.QtGui import QIcon
-    from PyQt5.QtWidgets import QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy, QFrame, QStackedLayout
+    from PyQt5.QtWidgets import (QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy,
+                                  QFrame, QStackedLayout, QMenu, QApplication, QCheckBox, QWidgetAction)
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from PyQt6.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex
+    from PyQt6.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex, QObject, QEvent, QSortFilterProxyModel
     from PyQt6.QtGui import QIcon
-    from PyQt6.QtWidgets import QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy, QFrame, QStackedLayout
+    from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy,
+                                  QFrame, QStackedLayout, QMenu, QApplication, QCheckBox, QWidgetAction)
 
 class EventFilter(QObject):
     def __init__(self, isHidden, setHideAuthorColumn, model: QSortFilterProxyModel):
@@ -333,8 +335,7 @@ class ModAuthorColumn(mobase.IPluginTool):
 
         table_wrapper_layout = QStackedLayout(self._table_wrapper)
         table_wrapper_layout.setStackingMode(QStackedLayout.StackingMode.StackAll)
-        margins = self._modlist_widget.contentsMargins()
-        table_wrapper_layout.setContentsMargins(0, margins.top(), 0, margins.bottom())
+        table_wrapper_layout.setContentsMargins(0, 0, 0, 0)
         table_wrapper_layout.setSpacing(0)
 
         # Thin draggable edge on the left side of the entire author table.
@@ -348,7 +349,7 @@ class ModAuthorColumn(mobase.IPluginTool):
         table_content_layout.addWidget(self._resync_button)
         table_wrapper_layout.addWidget(self._table_handle)
         table_wrapper_layout.addWidget(table_content)
-
+        
         self._table.tableWidthChanged.connect(self._on_table_width_changed)
 
         self._modlist_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
