@@ -2,10 +2,12 @@
 import mobase #type: ignore
 import os
 import configparser
+import webbrowser
 
 from .SettingsDialog import SettingsDialog
 from .AuthorTreeView import ModAuthorTreeView
 from .EventFilters import ContextMenuEventFilter
+from .UrlEditorDialog import UrlDialog
 from .Global import (PRIORITY_COL, 
                      MINIMUM_COL_WIDTH, DEFAULT_AUTHOR_NAME_COL_WIDTH, 
                      DEFAULT_MOD_NAME_COL_WIDTH, DEFAULT_TABLE_WIDTH)
@@ -99,7 +101,7 @@ class ModAuthorColumn(mobase.IPluginTool):
         return self.tr("Adds a mod author column to the modlist kind of...")
 
     def version(self):
-        return mobase.VersionInfo(0, 1, 1, mobase.ReleaseType.FINAL)
+        return mobase.VersionInfo(0, 1, 2, mobase.ReleaseType.FINAL)
 
     def settings(self):
         return [
@@ -241,7 +243,7 @@ class ModAuthorColumn(mobase.IPluginTool):
         self._table_wrapper.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self._table = ModAuthorTreeView(self._modlist_widget, self._current_modlist_order, self._get_author_text, 
                                         self._load_column_width, self._save_column_width, self._save_user_set_name,
-                                        self._context_menu, self.use_uploader)
+                                        self._header_context_menu, self._column_context_menu, self.use_uploader)
         self._table.modeChanged.connect(self._on_table_mode_changed)
 
         self._table.refresh_from_modlist()
@@ -293,7 +295,7 @@ class ModAuthorColumn(mobase.IPluginTool):
 
         self._hide_table(self.hide_author_column)
 
-    def _context_menu(self, position):
+    def _header_context_menu(self, position):
         menu = QMenu()
         def create_checkbox(text, state):
             checkbox = QCheckBox()
@@ -323,6 +325,60 @@ class ModAuthorColumn(mobase.IPluginTool):
         width_checkBox.clicked.connect(_resetWidthClicked)
 
         menu.exec(self._table.viewport().mapToGlobal(position))
+
+    def _save_user_url(self, mod_name:str, url:str|None):
+        mod_handle = self._organizer.modList().getMod(mod_name)
+        if mod_handle:
+            mod_path = mod_handle.absolutePath()
+            if os.path.exists(mod_path):
+                ini_path = os.path.join(mod_path, "meta.ini")
+                ini = configparser.ConfigParser()
+                ini.read(ini_path, encoding='utf-8')
+                if not ini.has_section("ModAuthorColumn"):
+                    ini.add_section("ModAuthorColumn")
+                key = "userseturl"
+                if url == None:
+                    if ini.has_option("ModAuthorColumn", key):
+                        ini.remove_option("ModAuthorColumn", key)
+                else:
+                    ini.set("ModAuthorColumn", key, url)
+                try:
+                    with open(ini_path, "w", encoding="utf-8") as f:
+                        ini.write(f)
+                except:
+                    pass
+
+    def _column_context_menu(self, position):
+        idx = self._table.indexAt(position)
+        mod_name = idx.siblingAtColumn(0).data(Qt.ItemDataRole.DisplayRole)
+        url_info = self._urls[mod_name]
+        if url_info:
+            url = url_info.get("default") if not url_info.get("user") else url_info["user"]
+        else:
+            url = None
+        menu = QMenu()
+        def make_button(text, func):
+            button = QPushButton(text)
+            button.clicked.connect(func)
+            action = QWidgetAction(menu)
+            action.setDefaultWidget(button)
+            menu.addAction(action)
+            return button
+        visit_button = make_button(self.tr("Visit Uploader Page"), lambda: webbrowser.open(url))
+        if not url:
+            visit_button.setDisabled(True)
+        def edit_url():
+            dialog = UrlDialog(url)
+            if dialog.exec():
+                user_url = dialog.line_edit.text()
+                if user_url != url:
+                    if user_url == '':
+                        user_url = None
+                    self._urls[mod_name].update({"user": user_url})
+                    self._save_user_url(mod_name, user_url)
+        make_button(self.tr("Change Page Url"), edit_url)
+        menu.exec(self._table.viewport().mapToGlobal(position))
+
 
     def _on_table_width_changed(self, width: int):
         self._table_wrapper.setFixedWidth(width)
@@ -394,6 +450,10 @@ class ModAuthorColumn(mobase.IPluginTool):
         return self.hide_author_column
 
     def _get_author_from_nexus(self, game_name, mod_id, mod_name, ini_path):
+        if self._mod_authors.get(mod_name, 'NotInit') == 'NotInit':
+            self._mod_authors[mod_name] = None
+        if self._urls.get(mod_name, 'NotInit') == 'NotInit':
+            self._urls[mod_name] = {}
         self._requested_mods.add(mod_name)
         self._bridge.requestDescription(game_name, mod_id, (mod_name, ini_path))
         return
@@ -433,7 +493,8 @@ class ModAuthorColumn(mobase.IPluginTool):
         description:dict = args[3]
         author = description.get('author', None)
         uploaded_by = description.get('uploaded_by', None)
-
+        url = ("https://www.nexusmods.com/profile/" + uploaded_by) if uploaded_by else None
+        self._urls[mod_name] = {"default": url, "user": None}
         if self.use_uploader:
             self._mod_authors[mod_name] = uploaded_by
         else:
@@ -487,8 +548,11 @@ class ModAuthorColumn(mobase.IPluginTool):
             if ini.has_section('ModAuthorColumn'):
                 author = ini.get("ModAuthorColumn", "author", fallback=None)
                 uploader = ini.get("ModAuthorColumn", "uploader", fallback=None)
+                url = ("https://www.nexusmods.com/profile/" + uploader) if uploader else None
                 user_set_author = ini.get("ModAuthorColumn", "usersetauthor", fallback=None)
                 user_set_uploader = ini.get("ModAuthorColumn", "usersetuploader", fallback=None)
+                user_set_url = ini.get("ModAuthorColumn", "userseturl", fallback=None)
+                self._urls[mod_name] = {"default": url, "user": user_set_url}
                 if not self.use_uploader:
                     self._mod_authors[mod_name] = author if not user_set_author else user_set_author
                 else:
@@ -516,7 +580,7 @@ class ModAuthorColumn(mobase.IPluginTool):
 
     def _load_authors(self, force_request=False) -> dict:
         self._mod_authors:dict[str,str] = {mod: (None if mod != "Overwrite" else mod) for mod in self._organizer.modList().allMods()}
-
+        self._urls:dict[str,str] = {mod: ({} if mod != "Overwrite" else mod) for mod in self._organizer.modList().allMods()}
         internal_instance_game_name = self._organizer.managedGame().gameName()
         instance_game_name = self._organizer.managedGame().gameNexusName()
         self.internal_to_nexus_game_names = {internal_instance_game_name: instance_game_name}

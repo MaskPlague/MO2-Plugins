@@ -104,7 +104,8 @@ class ModAuthorTreeView(QTreeView):
                  order_provider, author_lookup, 
                  load_column_width, save_column_width,
                  save_user_set_name,
-                 context_menu,
+                 header_context_menu,
+                 column_context_menu,
                  use_uploader,
                  parent=None):
         super().__init__(parent)
@@ -148,7 +149,9 @@ class ModAuthorTreeView(QTreeView):
         self.header().setHighlightSections(False)
         self.header().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         self.header().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.header().customContextMenuRequested.connect(context_menu)
+        self.header().customContextMenuRequested.connect(header_context_menu)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(column_context_menu)
         self._is_adjusting = False
 
         self.header().setMinimumSectionSize(MINIMUM_COL_WIDTH)
