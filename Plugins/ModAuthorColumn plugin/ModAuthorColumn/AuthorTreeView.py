@@ -1,18 +1,22 @@
+from .EventFilters import ScrollBarEventFilter, LeaveEventFilter
 from .Global import (UNKNOWN_AUTHOR, MINIMUM_COL_WIDTH, 
                      DEFAULT_MOD_NAME_COL_WIDTH, DEFAULT_AUTHOR_NAME_COL_WIDTH)
 try:
-    from PyQt6.QtCore import Qt, QModelIndex, QPersistentModelIndex, QTimer, QItemSelectionModel, QItemSelection, pyqtSignal
-    from PyQt6.QtGui import QColor, QStandardItemModel, QStandardItem
-    from PyQt6.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView, QApplication
+    from PyQt6.QtCore import (Qt, QModelIndex, QPersistentModelIndex, QTimer, QItemSelectionModel, QItemSelection, pyqtSignal, 
+                              QPoint, QEvent, QCoreApplication)
+    from PyQt6.QtGui import QColor, QStandardItemModel, QStandardItem, QHoverEvent
+    from PyQt6.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView, QApplication, QStyle
 except ImportError:
-    from PyQt5.QtCore import Qt, QModelIndex, QPersistentModelIndex, QTimer, QItemSelectionModel, QItemSelection, pyqtSignal
-    from PyQt5.QtGui import QColor, QStandardItemModel, QStandardItem
-    from PyQt5.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView, QApplication
+    from PyQt5.QtCore import (Qt, QModelIndex, QPersistentModelIndex, QTimer, QItemSelectionModel, QItemSelection, pyqtSignal, 
+                              QPoint, QEvent, QCoreApplication)
+    from PyQt5.QtGui import QColor, QStandardItemModel, QStandardItem, QHoverEvent
+    from PyQt5.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView, QApplication, QStyle
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from PyQt6.QtCore import Qt, QModelIndex, QPersistentModelIndex, QTimer, QItemSelectionModel, QItemSelection, pyqtSignal
-    from PyQt6.QtGui import QColor, QStandardItemModel, QStandardItem
-    from PyQt6.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView, QApplication
+    from PyQt6.QtCore import (Qt, QModelIndex, QPersistentModelIndex, QTimer, QItemSelectionModel, QItemSelection, pyqtSignal, 
+                              QPoint, QEvent, QCoreApplication)
+    from PyQt6.QtGui import QColor, QStandardItemModel, QStandardItem, QHoverEvent
+    from PyQt6.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView, QApplication, QStyle
     
 
 #Prevent right most column from being click dragged
@@ -42,7 +46,8 @@ class LockedEdgeHeader(QHeaderView):
         last_col_right_edge = sum(self.sectionSize(i) for i in range(count))
         return abs(mouse_x - last_col_right_edge) <= 4
 
-class SyncHeightDelegate(QStyledItemDelegate):
+class AuthorColumnDelegate(QStyledItemDelegate):
+    
     def __init__(self, modlist_widget, parent=None):
         super().__init__(parent)
         self.modlist_widget = modlist_widget
@@ -58,8 +63,17 @@ class SyncHeightDelegate(QStyledItemDelegate):
             value = UNKNOWN_AUTHOR
         return super().displayText(value, locale)
 
+    #For syncing hover
+    _hovered = None
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        if index == self._hovered:
+            option.state |= QStyle.StateFlag.State_MouseOver
+            self._hovered = None
+
 class ModAuthorItem(QStandardItem):
     _persistent_index: QPersistentModelIndex = None
+    
     def __init__(self, other, persistent_index, save_user_set_name,):
         self._persistent_index = persistent_index
         self._save_user_set_name = save_user_set_name
@@ -86,7 +100,6 @@ class ModAuthorTreeView(QTreeView):
 
     modeChanged = pyqtSignal(bool)
     tableWidthChanged = pyqtSignal(int)
-
     def __init__(self:QTreeView, modlist_widget: QTreeView, 
                  order_provider, author_lookup, 
                  load_column_width, save_column_width,
@@ -112,8 +125,8 @@ class ModAuthorTreeView(QTreeView):
         self._persistent_index_to_row: dict = {}
 
         self.setObjectName("ModAuthorColumnTree")
-        self._height_delegate = SyncHeightDelegate(self._modlist_widget, self)
-        self.setItemDelegate(self._height_delegate)
+        self._author_col_delegate = AuthorColumnDelegate(self._modlist_widget, self)
+        self.setItemDelegate(self._author_col_delegate)
 
         self._model = QStandardItemModel()
         self._model.setColumnCount(2)
@@ -154,27 +167,34 @@ class ModAuthorTreeView(QTreeView):
         self.setSortingEnabled(False)  # we sort manually
         self.header().setSectionsClickable(True)  # still need to be able to click the section to sort manually
         self.setColumnHidden(0, True)  # hidden while synced; shown while detached
-
+        
         self.header().setMinimumHeight(self._modlist_widget.header().minimumHeight())
         self.header().setMaximumHeight(self._modlist_widget.header().maximumHeight())
 
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._event_filter = ScrollBarEventFilter(self)
+        self._modlist_widget.horizontalScrollBar().installEventFilter(self._event_filter)
+        
         self._restore_column_widths()
         self.set_table_width(self.columnWidth(1))
 
         self.header().sectionClicked.connect(self._on_header_clicked)
         self.doubleClicked.connect(self._on_cell_clicked)
+        self._test = LeaveEventFilter(self)
+        self._modlist_widget.installEventFilter(self._test)
 
         self._connect_modlist_sort_sync()
         self._connect_scroll_sync()
         self._connect_selection_sync()
+        self._connect_hover_sync()
         self._connect_collapse_sync()
         self._connect_separator_color_polling()
         self._stealStyleSheet()
 
+    #Steal ModListView's stylesheet
     def _stealStyleSheet(self):
-        #Steal ModListView's stylesheet
         style_sheet:str = QApplication.instance().styleSheet()
         if style_sheet.startswith("file:///"):
             path = style_sheet.replace("file:///", "")
@@ -445,7 +465,6 @@ class ModAuthorTreeView(QTreeView):
             persistent_index = item.data(Qt.ItemDataRole.UserRole)
             hidden = not self._is_visible_in_modlist(persistent_index)
             self.setRowHidden(row, QModelIndex(), hidden)
-
     # modlist -> table sync
 
     def _connect_modlist_sort_sync(self):
@@ -685,3 +704,40 @@ class ModAuthorTreeView(QTreeView):
                     self._mirror_scrollbar_value(self.verticalScrollBar(), self._modlist_widget.verticalScrollBar())
         finally:
             self._sync_lock = False
+
+    # hover sync
+
+    def _connect_hover_sync(self):
+        self.setMouseTracking(True)
+        self._modlist_widget.setMouseTracking(True)
+        def sync(idx: QModelIndex):
+            if not self._synced_to_modlist:
+                return
+            row = self.find_row_for_index(QPersistentModelIndex(idx.siblingAtColumn(0)))
+            idx = self._model.index(row, 1)
+            self._author_col_delegate._hovered = idx
+            self.viewport().update()
+        self._modlist_widget.entered.connect(sync)
+
+    # Sync hover events from author col to modlist
+    lastEventModifiers = None
+    lastEventPointingDevice = None
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        if not self._synced_to_modlist:
+            return
+        local_pos = event.position().toPoint().toPointF()
+        self.lastEventModifiers = event.modifiers()
+        self.lastEventPointingDevice = event.pointingDevice()
+        hover_event = QHoverEvent(QEvent.Type.HoverMove, local_pos, local_pos, 
+                                    event.modifiers(),event.pointingDevice())
+        QCoreApplication.postEvent(self._modlist_widget.viewport(), hover_event)
+
+    def leaveEvent(self, event: QEvent):
+        super().leaveEvent(event)
+        if self.lastEventModifiers is not None and self.lastEventPointingDevice is not None:
+            hover_leave = QHoverEvent(QEvent.Type.HoverLeave, QPoint(-1, -1).toPointF(), QPoint(-1, -1).toPointF(),
+                                       self.lastEventModifiers, self.lastEventPointingDevice)
+            QCoreApplication.postEvent(self._modlist_widget.viewport(), hover_leave)
+            self.lastEventModifiers = None
+            self.lastEventPointingDevice = None

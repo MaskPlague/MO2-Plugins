@@ -5,68 +5,28 @@ import configparser
 
 from .SettingsDialog import SettingsDialog
 from .AuthorTreeView import ModAuthorTreeView
+from .EventFilters import ContextMenuEventFilter
 from .Global import (PRIORITY_COL, 
                      MINIMUM_COL_WIDTH, DEFAULT_AUTHOR_NAME_COL_WIDTH, 
                      DEFAULT_MOD_NAME_COL_WIDTH, DEFAULT_TABLE_WIDTH)
 
 try:
-    from PyQt6.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex, QObject, QEvent, QSortFilterProxyModel
+    from PyQt6.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex
     from PyQt6.QtGui import QIcon
     from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy,
                                   QFrame, QStackedLayout, QMenu, QApplication, QCheckBox, QWidgetAction)
 except ImportError:
-    from PyQt5.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex, QObject, QEvent, QSortFilterProxyModel
+    from PyQt5.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex
     from PyQt5.QtGui import QIcon
     from PyQt5.QtWidgets import (QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy,
                                   QFrame, QStackedLayout, QMenu, QApplication, QCheckBox, QWidgetAction)
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from PyQt6.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex, QObject, QEvent, QSortFilterProxyModel
+    from PyQt6.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex
     from PyQt6.QtGui import QIcon
     from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy,
                                   QFrame, QStackedLayout, QMenu, QApplication, QCheckBox, QWidgetAction)
-
-class EventFilter(QObject):
-    def __init__(self, isHidden, setHideAuthorColumn, get_header_text, model: QSortFilterProxyModel):
-        self._isHidden = isHidden
-        self._setHideAuthorColumn = setHideAuthorColumn
-        self._header_text = get_header_text
-        self._model = model
-        super().__init__()
-
-    # Since the QMenu has no parent and no name we have to check if it is the context menu of the modlist header by counting and
-    # checking the structure of the children of the menu
-    def eventFilter(self, obj: QObject, event: QEvent):
-        if event.type() == QEvent.Type.Show and isinstance(obj, QMenu) and not obj.parent():
-            if self._model.columnCount()-1 == (len(obj.children()) - 1) / 2:
-                children = obj.children()
-                for i in range(1, len(children), 2):
-                    is_widgetAction = isinstance(children[i], QWidgetAction)
-                    is_checkBox = isinstance(children[i+1], QCheckBox)
-                    if not is_checkBox or not is_widgetAction:
-                        return False
-                checkBox = QCheckBox()
-                checkBox.setText(self._get_header_text())
-                checkBox.setChecked(not self._isHidden())
-
-                widgetAction = QWidgetAction(obj)
-                widgetAction.setDefaultWidget(checkBox)
-                checkBox.checkStateChanged.connect(self._checkStateChanged)
-                obj.addAction(widgetAction)
-        return False
-
-    def _checkStateChanged(self, state):
-        self._setHideAuthorColumn(state != Qt.CheckState.Checked)
-
-    def _isHidden(self):
-        return False
-
-    def _setHideAuthorColumn(self, value):
-        return
-
-    def _get_header_text(self):
-        return self._header_text()
 
 class TableResizeHandle(QFrame):
     def __init__(self, table, parent=None):
@@ -139,7 +99,7 @@ class ModAuthorColumn(mobase.IPluginTool):
         return self.tr("Adds a mod author column to the modlist kind of...")
 
     def version(self):
-        return mobase.VersionInfo(0, 1, 0, mobase.ReleaseType.FINAL)
+        return mobase.VersionInfo(0, 1, 1, mobase.ReleaseType.FINAL)
 
     def settings(self):
         return [
@@ -270,7 +230,7 @@ class ModAuthorColumn(mobase.IPluginTool):
             return
         self._modlist_widget = modlist_widget
 
-        self.event_filter = EventFilter(self._isHidden, self._setHideAuthorColumn, self._get_header_text, self._modlist_widget.model())
+        self.event_filter = ContextMenuEventFilter(self._isHidden, self._setHideAuthorColumn, self._get_header_text, self._modlist_widget.model())
         QApplication.instance().installEventFilter(self.event_filter)
 
         self._mod_authors: dict = {}
