@@ -351,6 +351,8 @@ class ModAuthorColumn(mobase.IPluginTool):
     def _column_context_menu(self, position):
         idx = self._table.indexAt(position)
         mod_name = idx.siblingAtColumn(0).data(Qt.ItemDataRole.DisplayRole)
+        if mod_name == "Overwrite":
+            return
         url_info = self._urls[mod_name]
         if url_info:
             url = url_info.get("default") if not url_info.get("user") else url_info["user"]
@@ -580,7 +582,7 @@ class ModAuthorColumn(mobase.IPluginTool):
 
     def _load_authors(self, force_request=False) -> dict:
         self._mod_authors:dict[str,str] = {mod: (None if mod != "Overwrite" else mod) for mod in self._organizer.modList().allMods()}
-        self._urls:dict[str,str] = {mod: ({} if mod != "Overwrite" else mod) for mod in self._organizer.modList().allMods()}
+        self._urls:dict[str,str] = {mod: {} for mod in self._organizer.modList().allMods()}
         internal_instance_game_name = self._organizer.managedGame().gameName()
         instance_game_name = self._organizer.managedGame().gameNexusName()
         self.internal_to_nexus_game_names = {internal_instance_game_name: instance_game_name}
