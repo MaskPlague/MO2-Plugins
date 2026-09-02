@@ -522,6 +522,7 @@ class ModAuthorTreeView(QTreeView):
         self._model.sort(logical_index, self._sort_order)
         self._rebuild_row_indexes()
         self.apply_row_visibility()
+        self.header().setSortIndicator(1, self._sort_order)
 
     def _rebuild_row_indexes(self):
         self._internal_name_to_row = {}
@@ -553,6 +554,7 @@ class ModAuthorTreeView(QTreeView):
 
     def enter_detached_mode(self):
         self._changing_modes = True
+        self.header().setSortIndicatorShown(True)
         total_width, mod_name_width, author_width = self._detached_layout()
         self.setColumnHidden(0, False)  # show Mod Name so you can see what's sorted
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -565,6 +567,7 @@ class ModAuthorTreeView(QTreeView):
 
     def enter_synced_mode(self):
         self._changing_modes = True
+        self.header().setSortIndicatorShown(False)
         self._save_width(0, self.columnWidth(0))
         self.set_table_width(self.columnWidth(1) + self._fullFrameWidth())
         self.setColumnHidden(0, True)
