@@ -5,18 +5,18 @@ try:
     from PyQt6.QtCore import (Qt, QModelIndex, QPersistentModelIndex, QTimer, QItemSelectionModel, QItemSelection, pyqtSignal, 
                               QPoint, QEvent, QCoreApplication)
     from PyQt6.QtGui import QColor, QStandardItemModel, QStandardItem, QHoverEvent
-    from PyQt6.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView, QApplication, QStyle
+    from PyQt6.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView, QApplication, QStyle, QLineEdit
 except ImportError:
     from PyQt5.QtCore import (Qt, QModelIndex, QPersistentModelIndex, QTimer, QItemSelectionModel, QItemSelection, pyqtSignal, 
                               QPoint, QEvent, QCoreApplication)
     from PyQt5.QtGui import QColor, QStandardItemModel, QStandardItem, QHoverEvent
-    from PyQt5.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView, QApplication, QStyle
+    from PyQt5.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView, QApplication, QStyle, QLineEdit
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from PyQt6.QtCore import (Qt, QModelIndex, QPersistentModelIndex, QTimer, QItemSelectionModel, QItemSelection, pyqtSignal, 
                               QPoint, QEvent, QCoreApplication)
     from PyQt6.QtGui import QColor, QStandardItemModel, QStandardItem, QHoverEvent
-    from PyQt6.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView, QApplication, QStyle
+    from PyQt6.QtWidgets import QTreeView, QAbstractItemView, QStyledItemDelegate, QHeaderView, QApplication, QStyle, QLineEdit
     
 
 #Prevent right most column from being click dragged
@@ -106,7 +106,8 @@ class ModAuthorTreeView(QTreeView):
                  save_user_set_name,
                  header_context_menu,
                  column_context_menu,
-                 use_uploader,
+                 use_uploader:bool,
+                 filter:QLineEdit,
                  parent=None):
         super().__init__(parent)
         self._modlist_widget = modlist_widget
@@ -115,6 +116,7 @@ class ModAuthorTreeView(QTreeView):
         self._load_column_width = load_column_width
         self._save_column_width = save_column_width
         self._save_user_set_name = save_user_set_name
+        self._filter = filter
 
         self._sync_lock = False
         self._synced_to_modlist = True
@@ -389,6 +391,7 @@ class ModAuthorTreeView(QTreeView):
         internal_name = item0.data(self._INTERNAL_NAME_ROLE)
         persistent_index = item0.data(Qt.ItemDataRole.UserRole)
         is_sep = self._is_separator(internal_name)
+        is_overwrite = internal_name == "Overwrite"
 
         author_item = self._model.item(row, 1)
         if author_item is None:
@@ -398,7 +401,7 @@ class ModAuthorTreeView(QTreeView):
         author_item.setText(author_text)
         if author_text != None:
             author_item.setToolTip(author_text)
-        if is_sep:
+        if is_sep or is_overwrite:
             author_item.setEditable(False)
         self._apply_row_colors(row)
 
@@ -522,6 +525,7 @@ class ModAuthorTreeView(QTreeView):
         self._model.sort(logical_index, self._sort_order)
         self._rebuild_row_indexes()
         self.apply_row_visibility()
+        self.filter_search()
         self.header().setSortIndicator(1, self._sort_order)
 
     def _rebuild_row_indexes(self):
@@ -554,6 +558,7 @@ class ModAuthorTreeView(QTreeView):
 
     def enter_detached_mode(self):
         self._changing_modes = True
+        self._filter.setHidden(False)
         self.header().setSortIndicatorShown(True)
         total_width, mod_name_width, author_width = self._detached_layout()
         self.setColumnHidden(0, False)  # show Mod Name so you can see what's sorted
@@ -568,6 +573,8 @@ class ModAuthorTreeView(QTreeView):
     def enter_synced_mode(self):
         self._changing_modes = True
         self.header().setSortIndicatorShown(False)
+        self._filter.clear()
+        self._filter.setHidden(True)
         self._save_width(0, self.columnWidth(0))
         self.set_table_width(self.columnWidth(1) + self._fullFrameWidth())
         self.setColumnHidden(0, True)
@@ -747,3 +754,13 @@ class ModAuthorTreeView(QTreeView):
             QCoreApplication.postEvent(self._modlist_widget.viewport(), hover_leave)
             self.lastEventModifiers = None
             self.lastEventPointingDevice = None
+
+    def filter_search(self):
+        root_idx = self.rootIndex()
+        if len(self._filter.text()) > 0:
+            items = [item.data(Qt.ItemDataRole.DisplayRole) for item in self._model.findItems(self._filter.text(), Qt.MatchFlag.MatchContains, 1)]
+            for i in range(self._model.rowCount()):
+                self.setRowHidden(i, root_idx, False if self._model.item(i,1).data(Qt.ItemDataRole.DisplayRole) in items else True)
+        else:
+            for i in range(self._model.rowCount()):
+                self.setRowHidden(i, root_idx, False)

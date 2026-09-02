@@ -16,19 +16,19 @@ try:
     from PyQt6.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex
     from PyQt6.QtGui import QIcon
     from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy,
-                                  QFrame, QStackedLayout, QMenu, QApplication, QCheckBox, QWidgetAction)
+                                  QFrame, QStackedLayout, QMenu, QApplication, QCheckBox, QWidgetAction, QLineEdit)
 except ImportError:
     from PyQt5.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex
     from PyQt5.QtGui import QIcon
     from PyQt5.QtWidgets import (QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy,
-                                  QFrame, QStackedLayout, QMenu, QApplication, QCheckBox, QWidgetAction)
+                                  QFrame, QStackedLayout, QMenu, QApplication, QCheckBox, QWidgetAction, QLineEdit)
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from PyQt6.QtCore import Qt, QCoreApplication, QModelIndex, QPersistentModelIndex
     from PyQt6.QtGui import QIcon
     from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QTreeView, QMainWindow, QSplitter, QVBoxLayout, QPushButton, QSizePolicy,
-                                  QFrame, QStackedLayout, QMenu, QApplication, QCheckBox, QWidgetAction)
+                                  QFrame, QStackedLayout, QMenu, QApplication, QCheckBox, QWidgetAction, QLineEdit)
 
 class TableResizeHandle(QFrame):
     def __init__(self, table, parent=None):
@@ -101,7 +101,7 @@ class ModAuthorColumn(mobase.IPluginTool):
         return self.tr("Adds a mod author column to the modlist kind of...")
 
     def version(self):
-        return mobase.VersionInfo(0, 1, 2, mobase.ReleaseType.FINAL)
+        return mobase.VersionInfo(0, 1, 3, mobase.ReleaseType.FINAL)
 
     def settings(self):
         return [
@@ -241,11 +241,14 @@ class ModAuthorColumn(mobase.IPluginTool):
         self._modlist_widget.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._table_wrapper = QWidget()
         self._table_wrapper.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self._filter = QLineEdit()
+        self._filter.setPlaceholderText(self.tr("Filter"))
         self._table = ModAuthorTreeView(self._modlist_widget, self._current_modlist_order, self._get_author_text, 
                                         self._load_column_width, self._save_column_width, self._save_user_set_name,
-                                        self._header_context_menu, self._column_context_menu, self.use_uploader)
+                                        self._header_context_menu, self._column_context_menu, self.use_uploader, self._filter)
         self._table.modeChanged.connect(self._on_table_mode_changed)
-
+        self._filter.textChanged.connect(self._table.filter_search)
+        self._filter.setHidden(True)
         self._table.refresh_from_modlist()
         self._table.resize_columns()
 
@@ -279,6 +282,7 @@ class ModAuthorColumn(mobase.IPluginTool):
         table_content_layout.setContentsMargins(0, 0, 0, 0)
         table_content_layout.setSpacing(0)
         table_content_layout.addWidget(self._table)
+        table_content_layout.addWidget(self._filter)
         table_content_layout.addWidget(self._resync_button)
         table_wrapper_layout.addWidget(self._table_handle)
         table_wrapper_layout.addWidget(table_content)
