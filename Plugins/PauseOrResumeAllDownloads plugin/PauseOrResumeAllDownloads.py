@@ -37,10 +37,18 @@ class ContextMenuEventFilter(QObject):
         super().__init__()
         self.download_view: QTreeView = download_view
         self.plugin: PauseOrResumeAllDownloads = plugin_instance
-        self.pause_all_action = QAction("Pause All")
+        if self.plugin._max_count != -1:
+            pt = f"Pause All (Max: {self.plugin._max_count})"
+            rt = f"Resume All (Max: {self.plugin._max_count})"
+        else:
+            pt = "Pause All"
+            rt = "Resume All"
+        self.pause_all_action = QAction(pt)
         self.pause_all_action.triggered.connect(self.plugin._pauseAllDownloads)
-        self.resume_all_action = QAction("Resume All")
+        self.resume_all_action = QAction(rt)
         self.resume_all_action.triggered.connect(self.plugin._resumeAllDownloads)
+        self.delay = self.plugin._delay
+        self.max_count = self.plugin._max_count
 
     def eventFilter(self, obj, event: QEvent):
         if getattr(self.plugin, 'is_running', False):
@@ -74,7 +82,7 @@ class ContextMenuEventFilter(QObject):
     def auto_trigger_menu_pause(self, menu: QMenu):
         selection_model = self.download_view.selectionModel()
         if not selection_model.hasSelection():
-            QTimer.singleShot(10, self.plugin._process_next_download)
+            QTimer.singleShot(self.delay, self.plugin._process_next_download)
             return
         index = selection_model.currentIndex()
         item = index.sibling(index.row(), DOWNLOAD_COLUMN).data(Qt.ItemDataRole.DisplayRole)
@@ -86,12 +94,12 @@ class ContextMenuEventFilter(QObject):
                 pause_action = actions[1]
                 pause_action.trigger()
         menu.close()
-        QTimer.singleShot(10, self.plugin._process_next_download)
+        QTimer.singleShot(self.delay, self.plugin._process_next_download)
 
     def auto_trigger_menu_resume(self, menu: QMenu):
         selection_model = self.download_view.selectionModel()
         if not selection_model.hasSelection():
-            QTimer.singleShot(10, self.plugin._process_next_download)
+            QTimer.singleShot(self.delay, self.plugin._process_next_download)
             return
         index = selection_model.currentIndex()
         item = index.sibling(index.row(), DOWNLOAD_COLUMN).data(Qt.ItemDataRole.DisplayRole)
@@ -103,7 +111,7 @@ class ContextMenuEventFilter(QObject):
                 resume_action = actions[1]
                 resume_action.trigger()
         menu.close()
-        QTimer.singleShot(10, self.plugin._process_next_download)
+        QTimer.singleShot(self.delay, self.plugin._process_next_download)
            
 class PauseOrResumeAllDownloads(mobase.IPlugin):
 
@@ -119,14 +127,25 @@ class PauseOrResumeAllDownloads(mobase.IPlugin):
         self.is_pausing = False
         self.is_resuming = False
         self.refresh_button = None
-        self.resume_button = QPushButton("Resume All")
+        self._max_count = max(-1, self._organizer.pluginSetting(self.name(), "MaxToToggle"))
+        if self._max_count != -1:
+            pt = f"Pause All (Max: {self._max_count})"
+            rt = f"Resume All (Max: {self._max_count})"
+        else:
+            pt = "Pause All"
+            rt = "Resume All"
+        self.resume_button = QPushButton(rt)
         self.resume_button.adjustSize()
         self.resume_button.clicked.connect(self._resumeAllDownloads)
-        self.pause_button = QPushButton("Pause All")
+        self.pause_button = QPushButton(pt)
         self.pause_button.adjustSize()
         self.pause_button.clicked.connect(self._pauseAllDownloads)
         self.insert_actions_in_context_menus = self._organizer.pluginSetting(self.name(), "InsertActionsInContextMenus")
         self.insert_buttons_in_download_tab = self._organizer.pluginSetting(self.name(), "InsertButtonsInDownloadTab")
+        self._delay = max(10, self._organizer.pluginSetting(self.name(), "DelayInMS"))
+        
+
+        self.count = 0
         self._organizer.onUserInterfaceInitialized(self._onUserInterfaceInitialized)
         return True
 
@@ -152,7 +171,13 @@ class PauseOrResumeAllDownloads(mobase.IPlugin):
                                  False),
             mobase.PluginSetting("InsertButtonsInDownloadTab", 
                                  'If "Pause All" and "Resume All" buttons should be inserted at the top of the downloads tab (changing requires restarting MO2).', 
-                                 True)
+                                 True),
+            mobase.PluginSetting("DelayInMS", 
+                                'Delay in milliseconds between pausing/resuming individual downloads, minimum of 10 (changing requires restarting MO2).', 
+                                10),
+            mobase.PluginSetting("MaxToToggle", 
+                                'Maximum amount of downloads to attempt to pause/resume in one button press, set to -1 for no maximum (changing requires restarting MO2).', 
+                                -1),
             ]
     
     def displayName(self):
@@ -206,6 +231,7 @@ class PauseOrResumeAllDownloads(mobase.IPlugin):
     def _startRunning(self):
         self.resume_button.setEnabled(False)
         self.pause_button.setEnabled(False)
+        self.count = 0
         self.is_running = True
         self.pending_files.clear()
         self.processed_files.clear()
@@ -271,7 +297,12 @@ class PauseOrResumeAllDownloads(mobase.IPlugin):
                 self.main_window.raise_()
                 self.downloadView.setFocus()
             return
-        
+        if self._max_count != -1 and self.count >= self._max_count:
+            self.count = 0
+            self.pending_files.clear()
+            self._process_next_download()
+            return
+        self.count += 1
         target_file = self.pending_files.pop(0)
         model = self.downloadView.model()
         rowCount = model.rowCount()
