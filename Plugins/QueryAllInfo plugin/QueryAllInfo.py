@@ -1,11 +1,11 @@
 #Written by MaskPlauge
-import mobase
+import mobase #type: ignore
 import os
 
 try:
     from PyQt6.QtCore import QCoreApplication, QObject, Qt, QEvent, QItemSelectionModel, QTimer
     from PyQt6.QtGui import QIcon, QCursor, QAction
-    from PyQt6.QtWidgets import QMainWindow, QTabWidget, QWidget, QTreeView, QApplication, QMenu, QPushButton, QHBoxLayout, QMessageBox
+    from PyQt6.QtWidgets import QMainWindow, QTabWidget, QWidget, QTreeView, QApplication, QMenu, QPushButton, QHBoxLayout, QMessageBox, QProgressDialog
 
     # Compatibility flags
     SELECT_FLAG = QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows
@@ -42,28 +42,44 @@ class ContextMenuEventFilter(QObject):
         self.action.triggered.connect(self.plugin._queryAllInfo)
         self.buttons: list[QPushButton] = []
         self.active_file = None
+        self.cancel_button: QPushButton = None
+        self.progress_dialog: QProgressDialog = None
 
     def eventFilter(self, obj: QObject, event: QEvent):
-        if getattr(self.plugin, 'is_auto_querying', False):
+        if self.plugin.is_auto_querying:
             if event.type() in BLOCKED_EVENTS:
-                return True
+                return False
+        if obj == self.progress_dialog and event.type() == QEvent.Type.Hide:
+            self.progress_dialog = None
+            self.cancel_button = None
+            return False
 
-        if event.type() == QEvent.Type.Show and isinstance(obj, QMenu) and not self.plugin.processing_events:
+        if not event.type() == QEvent.Type.Show or self.plugin.processing_events:
+            return False
+
+        if obj.objectName() in ("QueryAllInfoBox", "QueryAllInfoCancelButton", "QueryAllInfoSkipButton"):
+            return False
+
+        if isinstance(obj, QMenu):
             if obj.parent() == self.download_view:
-                if getattr(self.plugin, 'is_auto_querying', False):
+                if self.plugin.is_auto_querying:
                     QTimer.singleShot(0, lambda:self.auto_trigger_menu(obj))
                     self.buttons.clear()
-                    return False
-                elif getattr(self.plugin, "insert_action_in_context_menus", False):
+                elif self.plugin.insert_action_in_context_menus:
                     self.insert_action(obj)
-        elif event.type() == QEvent.Type.Show and not self.plugin.processing_events and getattr(self.plugin, 'is_auto_querying', False):
+        elif self.plugin.is_auto_querying:
             if isinstance(obj, QPushButton):
                 self.buttons.append(obj)
             elif obj.objectName() == 'QInputDialogClassWindow':
                 QTimer.singleShot(0, self.close_window)
             elif obj.objectName() == 'SelectionDialogWindow':
                 QTimer.singleShot(0, self.close_selection_window)
-                
+            elif isinstance(obj, QProgressDialog):
+                self.buttons.clear()
+                self.progress_dialog = obj
+                self.plugin.skip_button.setEnabled(True)
+                self.cancel_button = obj.findChild(QPushButton)
+                self.cancel_button.clicked.connect(self.plugin._skip_query_no_cancel)
         return False
     
     def close_selection_window(self):
@@ -111,6 +127,11 @@ class ContextMenuEventFilter(QObject):
                         self.active_file = file_name
                         self.plugin._log(f"Querying info for {file_name}")
                         query_action.trigger()
+                        # Need to remake because for some reason something is destroying/hiding the old message_box
+                        # I assume it is due to triggering the query_action directly without putting it on a QTimer.singleShot
+                        # but that only sometimes fixes the issue so I'm doing this instead
+                        self.plugin._make_message_box() 
+                        self.plugin.message_box.show()
                     else:
                         self.plugin._log(f"Failed to get correct query action for {file_name}")
                         self.plugin.pending_files.clear()
@@ -126,30 +147,66 @@ class QueryAllInfo(mobase.IPlugin):
     def __init__(self):
         super(QueryAllInfo, self).__init__()
         self._parentWidget = None
+        self.is_auto_querying = False
+        self.message_box = None
+        self.messsage_box_text = ''
+        self.skipped = False
     
     def init(self, organiser = mobase.IOrganizer):
         self._organizer = organiser
-        self.is_auto_querying = False
         self.refresh_button = None
         self.queried_filenames = []
         self.download_dir: mobase.IDownloadManager = self._organizer.downloadsPath()
         self.insert_action_in_context_menus = self._organizer.pluginSetting(self.name(), "InsertActionInContextMenus")
         self.insert_button_in_download_tab = self._organizer.pluginSetting(self.name(), "InsertButtonInDownloadTab")
         self.fake_metadata = self._organizer.pluginSetting(self.name(), "FakeMetadataForNonNexus")
+        self.max_file_size_in_bytes = self._gb_to_bytes(self._organizer.pluginSetting(self.name(), "MaxFileSizeAllowedInGB"))
         self._organizer.downloadManager().onDownloadComplete(self._onDownloadComplete)
         self._organizer.onUserInterfaceInitialized(self._onUserInterfaceInitialized)
         self._organizer.onPluginSettingChanged(self._onPluginSettingChanged)
         self.button = QPushButton("Query All Info")
         self.button.adjustSize()
         self.button.clicked.connect(self._queryAllInfo)
+        self.processing_events = False
+        self._make_message_box()
+        return True
+
+    def _make_message_box(self):
         self.message_box = QMessageBox()
+        self.message_box.setObjectName("QueryAllInfoBox")
         self.message_box.setWindowTitle("Querying All Info")
         self.message_box.setWindowFlags(
             Qt.WindowType.WindowStaysOnTopHint | 
             Qt.WindowType.FramelessWindowHint
         )
-        self.processing_events = False
-        return True
+        self.message_box.addButton(QMessageBox.StandardButton.Cancel)
+        self.message_box.button(QMessageBox.StandardButton.Cancel).clicked.connect(self._cancel_queries)
+        self.message_box.button(QMessageBox.StandardButton.Cancel).setObjectName("QueryAllInfoCancelButton")
+        self.skip_button = QPushButton("Skip")
+        self.skip_button.clicked.connect(self._skip_query)
+        self.skip_button.setObjectName("QueryAllInfoSkipButton")
+        self.skip_button.setEnabled(False)
+        self.message_box.addButton(self.skip_button, QMessageBox.ButtonRole.NoRole)
+        self.message_box.setText(self.messsage_box_text)
+
+    def _cancel_queries(self):
+        self._log("Canceling Queries")
+        self.pending_files.clear()
+        self._skip_query()
+
+    def _skip_query(self):
+        self._log("Skipping Current Query")
+        if self.event_filter.cancel_button != None:
+            self.skipped = True
+            self.event_filter.cancel_button.click()
+        self._onDownloadComplete()
+
+    def _skip_query_no_cancel(self):
+        self._log(f"Skipping Current Query because Progress Dialog was canceled. {self.skipped = }")
+        if not self.skipped:
+            self._onDownloadComplete()
+        else:
+            self.skipped = False
 
     def name(self) -> str:
         return "QueryAllInfo"
@@ -164,7 +221,7 @@ class QueryAllInfo(mobase.IPlugin):
         return self.tr("Adds a Query All Info button.")
     
     def version(self) -> mobase.VersionInfo:
-        return mobase.VersionInfo(1, 2, 1, mobase.ReleaseType.ALPHA)
+        return mobase.VersionInfo(1, 3, 0, mobase.ReleaseType.ALPHA)
     
     def settings(self):
         return [
@@ -176,7 +233,10 @@ class QueryAllInfo(mobase.IPlugin):
                                  True),
             mobase.PluginSetting("FakeMetadataForNonNexus",
                                  'If the plugin should create a fake file.zip.meta file for mods that are not from the Nexus.',
-                                 False)
+                                 False),
+            mobase.PluginSetting("MaxFileSizeAllowedInGB",
+                                 'The maximum size a file can be for the plugin to be allowed to automatically Query Info for it. Default 10 GB.',
+                                 10)
             ]
     
     def displayName(self):
@@ -202,6 +262,11 @@ class QueryAllInfo(mobase.IPlugin):
         if plugin == self.name():
             if setting_changed == "FakeMetadataForNonNexus":
                 self.fake_metadata = new_val
+            elif setting_changed == "MaxFileSizeAllowedInGB":
+                self.max_file_size_in_bytes = self._gb_to_bytes(new_val)
+
+    def _gb_to_bytes(self, gigabytes):
+        return gigabytes * (1024 ** 3)
 
     def _onUserInterfaceInitialized(self, main_window: QMainWindow):
         self.main_window = main_window
@@ -231,6 +296,14 @@ class QueryAllInfo(mobase.IPlugin):
         )
         QApplication.instance().installEventFilter(self.event_filter)
 
+    def _is_size_allowed(self, file):
+        path = os.path.join(self.download_dir, file)
+        if os.path.exists(path):
+            size = os.path.getsize(path)
+            if size < self.max_file_size_in_bytes:
+                return True
+        return False
+
     def _queryAllInfo(self):
         self.button.setEnabled(False)
         self._log("Starting Auto Query...")
@@ -249,11 +322,12 @@ class QueryAllInfo(mobase.IPlugin):
             
             if icon != None:
                 file_name = index.sibling(index.row(), FILENAME_COLUMN).data(Qt.ItemDataRole.DisplayRole)
-                if file_name:
+                if file_name and self._is_size_allowed(file_name):
                     self.pending_files.append(file_name)
         
         self._log(f"Found {len(self.pending_files)} files to query.")
-        self.message_box.setText(f"Querying {len(self.pending_files)} files. Please wait.")
+        self.messsage_box_text = f"Querying {len(self.pending_files)} files. Please wait."
+        self.message_box.setText(self.messsage_box_text)
         self.message_box.show()
         self._process_next()
 
@@ -280,7 +354,8 @@ class QueryAllInfo(mobase.IPlugin):
                 self.downloadView.setFocus()
             self.button.setEnabled(True)
             return
-        self.message_box.setText(f"Querying {len(self.pending_files)} files. Please wait.")
+        self.messsage_box_text = f"Querying {len(self.pending_files)} files. Please wait."
+        self.message_box.setText(self.messsage_box_text)
         target_file = self.pending_files.pop(0)
         model = self.downloadView.model()
         rowCount = model.rowCount()
@@ -293,7 +368,7 @@ class QueryAllInfo(mobase.IPlugin):
                 index = idx
                 break
         if index is None or not index.isValid():
-            self._log(f"Could not find {target_file} in view anymore! Skipping.")
+            self._log(f"Could not find {target_file} in view anymore. Skipping.")
             QTimer.singleShot(50, self._process_next)
             return
 
@@ -307,7 +382,7 @@ class QueryAllInfo(mobase.IPlugin):
         if not self.fake_metadata:
             return
         path = os.path.join(self.download_dir, file_name) + '.meta'
-        with open(path, "a+") as f:
+        with open(path, "a+", encoding='utf-8') as f:
             f.seek(0)
             lines = f.readlines()
             if len(lines) <= 2:
