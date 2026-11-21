@@ -54,6 +54,11 @@ class TreeExtraColumnProxy(QAbstractProxyModel):
         self._perm_cache: dict = {}
         self._flattening = False
         self._filter_text = ""
+        self._remapped = False  # sorting by our column or filtering: rows no longer match the source's
+        # Qt calls the methods below hundreds of thousands of times when painting or sorting a big list,
+        # so the source model and its column count are kept in plain attributes.
+        self._src = None
+        self._ncols = 0
         self.editing_allowed = False  # see flags()
 
     # --- public helpers ---
@@ -65,14 +70,14 @@ class TreeExtraColumnProxy(QAbstractProxyModel):
 
     def extra_column(self) -> int:
         """Column number of the added column (valid for the top level, which is what the header uses)."""
-        src = self.sourceModel()
-        return src.columnCount(QModelIndex()) if src else 0
+        return self._ncols
 
     def item_name(self, index: QModelIndex) -> str:
         """Display text of column 0 for the row `index` is on."""
-        name_idx = self.index(index.row(), 0, index.parent())
-        src_idx = self.mapToSource(name_idx)
-        val = self.sourceModel().data(src_idx, Qt.ItemDataRole.DisplayRole) if src_idx.isValid() else None
+        if self._src is None:
+            return ""
+        src_idx = self.mapToSource(self.createIndex(index.row(), 0, index.internalPointer()))
+        val = self._src.data(src_idx, Qt.ItemDataRole.DisplayRole) if src_idx.isValid() else None
         return str(val) if val is not None else ""
 
     def refresh_column(self, parent: QModelIndex = QModelIndex()) -> None:
@@ -91,10 +96,6 @@ class TreeExtraColumnProxy(QAbstractProxyModel):
             if self.hasChildren(child):
                 self.refresh_column(child)
 
-    @property
-    def _remapped(self) -> bool:
-        return self._sort_active or bool(self._filter_text)
-
     def set_filter(self, text: str) -> None:
         """Only show rows whose extra-column value contains `text` (and separators containing such rows)."""
         text = text.strip().casefold()
@@ -102,6 +103,7 @@ class TreeExtraColumnProxy(QAbstractProxyModel):
             return
         self._begin_relayout()
         self._filter_text = text
+        self._remapped = self._sort_active or bool(text)
         self._end_relayout()
 
     @property
@@ -135,6 +137,7 @@ class TreeExtraColumnProxy(QAbstractProxyModel):
                 self._flattening = False
         self._begin_relayout()
         self._sort_active = active
+        self._remapped = active or bool(self._filter_text)
         if active:
             self._sort_order = order
         self._end_relayout()
@@ -207,12 +210,6 @@ class TreeExtraColumnProxy(QAbstractProxyModel):
             return src.index(p_row, p_col, QModelIndex())
         return QModelIndex()
 
-    def _extra_col(self, parent: QModelIndex = QModelIndex()) -> int:
-        src = self.sourceModel()
-        if not src:
-            return 0
-        return src.columnCount(self.mapToSource(parent))
-
     # --- source model wiring ---
 
     _SIGNAL_SLOTS = (
@@ -231,14 +228,21 @@ class TreeExtraColumnProxy(QAbstractProxyModel):
 
     def setSourceModel(self, source_model) -> None:
         """Meant to be called once; the source model is never swapped afterwards."""
+        self._src = source_model
+        self._ncols = source_model.columnCount()
         super().setSourceModel(source_model)
+        source_model.destroyed.connect(self._on_source_destroyed)
         for signal, slot in self._SIGNAL_SLOTS:
             getattr(source_model, signal).connect(getattr(self, slot))
+
+    def _on_source_destroyed(self, *_) -> None:
+        self._src = None  # views may still ask questions while the application shuts down
 
     def _on_source_about_to_reset(self) -> None:
         self.beginResetModel()
 
     def _on_source_reset(self) -> None:
+        self._ncols = self._src.columnCount()
         self._perm_cache.clear()
         self.endResetModel()
 
@@ -285,7 +289,7 @@ class TreeExtraColumnProxy(QAbstractProxyModel):
         # The extra column is derived from column 0 (the name), so refresh it too.
         if top_left.column() <= 0 <= bottom_right.column():
             parent = self.mapFromSource(top_left.parent())
-            col = self._extra_col(parent)
+            col = self._ncols
             self.dataChanged.emit(
                 self.index(top_left.row(), col, parent),
                 self.index(bottom_right.row(), col, parent),
@@ -384,7 +388,7 @@ class TreeExtraColumnProxy(QAbstractProxyModel):
         src = self.sourceModel()
         if not src or self._remapped:
             return False
-        src_col = 0 if column >= self._extra_col(parent) else column
+        src_col = 0 if column >= self._ncols else column
         return src.canDropMimeData(data, action, row, src_col, self.mapToSource(parent))
 
     def dropMimeData(
@@ -393,86 +397,106 @@ class TreeExtraColumnProxy(QAbstractProxyModel):
         src = self.sourceModel()
         if not src or self._remapped:
             return False
-        src_col = 0 if column >= self._extra_col(parent) else column
+        src_col = 0 if column >= self._ncols else column
         return src.dropMimeData(data, action, row, src_col, self.mapToSource(parent))
 
     # --- Tree & Model Structure ---
 
+    def _count(self, src_parent: QModelIndex) -> int:
+        if self._remapped:
+            return len(self._perm(src_parent)[0])
+        return self._src.rowCount(src_parent)
+
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
-        src = self.sourceModel()
-        if not src:
+        if self._src is None:
             return 0
-        if parent.isValid() and parent.column() > 0:
-            return 0
-        src_parent = self.mapToSource(parent)
-        perm = self._perm(src_parent)
-        return len(perm[0]) if perm else src.rowCount(src_parent)
+        if parent.isValid():
+            if parent.column() > 0:
+                return 0
+            return self._count(self.mapToSource(parent))
+        return self._count(parent)
 
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
-        src = self.sourceModel()
-        if not src:
+        if self._src is None or (parent.isValid() and parent.column() > 0):
             return 0
-        if parent.isValid() and parent.column() > 0:
-            return 0
-        return src.columnCount(self.mapToSource(parent)) + 1
+        return self._ncols + 1
 
     def hasChildren(self, parent: QModelIndex = QModelIndex()) -> bool:
-        src = self.sourceModel()
-        if not src:
+        if self._src is None:
             return False
-        if parent.isValid() and parent.column() > 0:
-            return False
+        if parent.isValid():
+            if parent.column() > 0:
+                return False
+            src_parent = self.mapToSource(parent)
+        else:
+            src_parent = parent
         if self._remapped:
-            return self.rowCount(parent) > 0
-        return src.hasChildren(self.mapToSource(parent))
+            return self._count(src_parent) > 0
+        return self._src.hasChildren(src_parent)
 
     def index(self, row: int, column: int, parent: QModelIndex = QModelIndex()) -> QModelIndex:
-        src = self.sourceModel()
-        if not src or row < 0 or column < 0:
+        if self._src is None or row < 0 or column < 0 or column > self._ncols:
             return QModelIndex()
-        if parent.isValid() and parent.column() > 0:
+        if parent.isValid():
+            if parent.column() > 0:
+                return QModelIndex()
+            src_parent = self.mapToSource(parent)
+            if not src_parent.isValid():
+                return QModelIndex()
+            token = self._parent_token(src_parent)
+        else:
+            src_parent = parent
+            token = None
+        if row >= self._count(src_parent):
             return QModelIndex()
-
-        src_parent = self.mapToSource(parent)
-        if row >= self.rowCount(parent) or column >= src.columnCount(src_parent) + 1:
-            return QModelIndex()
-
-        token = self._parent_token(src_parent)
         return self.createIndex(row, column, token)
 
     def parent(self, child: QModelIndex) -> QModelIndex:
-        if not child.isValid() or not self.sourceModel():
+        if self._src is None or not child.isValid():
             return QModelIndex()
-        src_parent = self._source_parent_from_proxy(child)
-        if not src_parent.isValid():
-            return QModelIndex()
-        return self.mapFromSource(src_parent)
+        token = child.internalPointer()
+        if not isinstance(token, tuple):
+            return QModelIndex()  # top level
+        p_row, p_col = token
+        if p_row >= self._src.rowCount():
+            return QModelIndex()  # stale index from before a layout change
+        row = self._row_from_source(QModelIndex(), p_row)
+        return self.createIndex(row, p_col, None) if row >= 0 else QModelIndex()
 
     def mapToSource(self, proxy_index: QModelIndex) -> QModelIndex:
-        src = self.sourceModel()
-        if not proxy_index.isValid() or not src:
+        src = self._src
+        if src is None or not proxy_index.isValid():
             return QModelIndex()
-        src_parent = self._source_parent_from_proxy(proxy_index)
-        col = proxy_index.column()
-        max_cols = src.columnCount(src_parent)
-        if col >= max_cols:
-            col = 0
-        return src.index(self._row_to_source(src_parent, proxy_index.row()), col, src_parent)
+        column = proxy_index.column()
+        if column >= self._ncols:
+            column = 0
+        row = proxy_index.row()
+        token = proxy_index.internalPointer()
+        if isinstance(token, tuple):
+            src_parent = src.index(token[0], token[1])
+            if not src_parent.isValid():
+                return QModelIndex()  # stale index from before a layout change
+        else:
+            src_parent = QModelIndex()
+        if self._remapped:
+            row = self._row_to_source(src_parent, row)
+        return src.index(row, column, src_parent)
 
     def mapFromSource(self, source_index: QModelIndex) -> QModelIndex:
-        if not source_index.isValid() or not self.sourceModel():
+        if self._src is None or not source_index.isValid():
             return QModelIndex()
         src_parent = source_index.parent()
-        token = self._parent_token(src_parent)
-        row = self._row_from_source(src_parent, source_index.row())
-        if row < 0:
-            return QModelIndex()  # hidden by the filter
-        return self.createIndex(row, source_index.column(), token)
+        row = source_index.row()
+        if self._remapped:
+            row = self._row_from_source(src_parent, row)
+            if row < 0:
+                return QModelIndex()  # hidden by the filter
+        return self.createIndex(row, source_index.column(), self._parent_token(src_parent))
 
     def buddy(self, index: QModelIndex) -> QModelIndex:
         # Views edit the buddy of a cell. The default forwards to the source model, which only knows
         # column 0 for our extra column, so the editor would open on the wrong cell.
-        if index.isValid() and index.column() == self._extra_col(index.parent()):
+        if index.isValid() and index.column() == self._ncols:
             return index
         return super().buddy(index)
 
@@ -480,7 +504,7 @@ class TreeExtraColumnProxy(QAbstractProxyModel):
         if not index.isValid():
             src = self.sourceModel()
             return src.flags(QModelIndex()) if src else Qt.ItemFlag.NoItemFlags
-        if index.column() == self._extra_col(index.parent()):
+        if index.column() == self._ncols:
             base_flags = super().flags(self.index(index.row(), 0, index.parent()))
             flags = base_flags | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
             # Never inherit the name column's editability. The cell only counts as editable while
@@ -493,7 +517,7 @@ class TreeExtraColumnProxy(QAbstractProxyModel):
         return super().flags(index)
 
     def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole):
-        if orientation == Qt.Orientation.Horizontal and section == self._extra_col():
+        if orientation == Qt.Orientation.Horizontal and section == self._ncols:
             if role == Qt.ItemDataRole.DisplayRole:
                 return self._header_title
             if role == Qt.ItemDataRole.TextAlignmentRole:
@@ -503,10 +527,10 @@ class TreeExtraColumnProxy(QAbstractProxyModel):
         return src.headerData(section, orientation, role) if src else None
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
-        if not index.isValid():
+        if self._src is None or not index.isValid():
             return None
-        if index.column() != self._extra_col(index.parent()):
-            return super().data(index, role)
+        if index.column() != self._ncols:
+            return self._src.data(self.mapToSource(index), role)
 
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole, Qt.ItemDataRole.ToolTipRole):
             value = self._get_value(self.item_name(index))
@@ -551,7 +575,7 @@ class TreeExtraColumnProxy(QAbstractProxyModel):
         return QColor("white") if luminance <= 128 else None
 
     def setData(self, index: QModelIndex, value, role: int = Qt.ItemDataRole.EditRole) -> bool:
-        if not index.isValid() or index.column() != self._extra_col(index.parent()):
+        if not index.isValid() or index.column() != self._ncols:
             return super().setData(index, value, role)
         if role == Qt.ItemDataRole.EditRole:
             name = self.item_name(index)

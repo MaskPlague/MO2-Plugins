@@ -166,6 +166,7 @@ class ModAuthorColumn(mobase.IPluginTool):
         self._normalize_pending = False
         self._restoring_expanded = False
         self._restore_pending = False
+        self._scroll_before_reset = None
 
     def init(self, organiser=mobase.IOrganizer):
         self._organizer = organiser
@@ -217,6 +218,7 @@ class ModAuthorColumn(mobase.IPluginTool):
         # leaves and returns to priority), so keep our own record and re-apply it.
         modlist_widget.expanded.connect(lambda i: self._track_expanded(i, True))
         modlist_widget.collapsed.connect(lambda i: self._track_expanded(i, False))
+        self._proxy.modelAboutToBeReset.connect(self._remember_scroll)
         self._proxy.modelReset.connect(self._schedule_restore_expanded)
         self._proxy.layoutChanged.connect(self._schedule_restore_expanded)
         self._proxy.rowsInserted.connect(self._schedule_restore_expanded)
@@ -394,6 +396,23 @@ class ModAuthorColumn(mobase.IPluginTool):
             self._restore_pending = True
             QTimer.singleShot(0, self._restore_expanded)
 
+    def _remember_scroll(self):
+        self._scroll_before_reset = self._modlist_widget.verticalScrollBar().value()
+
+    def _reapply_scroll(self):
+        """A model reset (e.g. after deleting a mod) collapses every separator, which can throw the view to
+        the top. Put the old position back in that case, but leave alone any scrolling MO2 did on purpose
+        (e.g. to a freshly installed mod): that one ends up away from the top, at its selected mod."""
+        saved, self._scroll_before_reset = self._scroll_before_reset, None
+        view = self._modlist_widget
+        bar = view.verticalScrollBar()
+        current = view.currentIndex()
+        current_visible = current.isValid() and view.visualRect(current).intersects(view.viewport().rect())
+        separators = [mod_name for mod_name in self._organizer.modList().allMods() if mod_name.endswith("_separator")]
+        if saved and bar.value() <= len(separators) and not current_visible:
+            print("restore saved scroll")
+            bar.setValue(saved)
+
     def _restore_expanded(self):
         """Apply the wanted expanded state to every separator.
 
@@ -417,6 +436,8 @@ class ModAuthorColumn(mobase.IPluginTool):
                     self._modlist_widget.setExpanded(index, want)
         finally:
             self._restoring_expanded = False
+        if self._scroll_before_reset is not None:
+            self._reapply_scroll()
 
     @staticmethod
     def _expanded_separator_names(view: QTreeView, model) -> set:
