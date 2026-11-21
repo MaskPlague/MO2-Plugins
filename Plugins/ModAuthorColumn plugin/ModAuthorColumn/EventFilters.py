@@ -1,77 +1,64 @@
-
 try:
-    from PyQt6.QtCore import Qt, QObject, QEvent, QSortFilterProxyModel
-    from PyQt6.QtWidgets import QMenu, QCheckBox, QWidgetAction, QTreeView
+    from PyQt6.QtCore import QObject, QEvent, QTimer
 except ImportError:
-    from PyQt5.QtCore import Qt, QObject, QEvent, QSortFilterProxyModel
-    from PyQt5.QtWidgets import QMenu, QCheckBox, QWidgetAction, QTreeView
+    from PyQt5.QtCore import QObject, QEvent, QTimer
 
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from PyQt6.QtCore import Qt, QObject, QEvent, QSortFilterProxyModel
-    from PyQt6.QtWidgets import QMenu, QCheckBox, QWidgetAction, QTreeView
 
-class ContextMenuEventFilter(QObject):
-    def __init__(self, isHidden, setHideAuthorColumn, get_header_text, model: QSortFilterProxyModel):
-        self._isHidden = isHidden
-        self._setHideAuthorColumn = setHideAuthorColumn
-        self._header_text = get_header_text
-        self._model = model
-        super().__init__()
+class ColumnContextMenuFilter(QObject):
+    """
+    Intercepts right clicks on one column of a view's viewport.
 
-    # Since the QMenu has no parent and no name we have to check if it is the context menu of the modlist header by counting and
-    # checking the structure of the children of the menu
-    def eventFilter(self, obj: QObject, event: QEvent):
-        if event.type() == QEvent.Type.Show and isinstance(obj, QMenu) and not obj.parent():
-            if self._model.columnCount()-1 == (len(obj.children()) - 1) / 2:
-                children = obj.children()
-                for i in range(1, len(children), 2):
-                    is_widgetAction = isinstance(children[i], QWidgetAction)
-                    is_checkBox = isinstance(children[i+1], QCheckBox)
-                    if not is_checkBox or not is_widgetAction:
-                        return False
-                checkBox = QCheckBox()
-                checkBox.setText(self._get_header_text())
-                checkBox.setChecked(not self._isHidden())
+    `handler(index, global_pos) -> bool` is called for right clicks on that column and
+    `double_click_handler(index) -> bool` for double clicks; if it returns True the event is consumed,
+    otherwise MO2 handles it as usual.
+    """
 
-                widgetAction = QWidgetAction(obj)
-                widgetAction.setDefaultWidget(checkBox)
-                checkBox.checkStateChanged.connect(self._checkStateChanged)
-                obj.addAction(widgetAction)
+    def __init__(self, view, column_getter, handler, double_click_handler, parent=None):
+        super().__init__(parent)
+        self._double_click_handler = double_click_handler
+        self._view = view
+        self._column_getter = column_getter
+        self._handler = handler
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.ContextMenu and obj is self._view.viewport():
+            index = self._view.indexAt(event.pos())
+            if index.isValid() and index.column() == self._column_getter():
+                return bool(self._handler(index, event.globalPos()))
+        if (event.type() == QEvent.Type.MouseButtonDblClick and obj is self._view.viewport()):
+            point = event.position().toPoint() if hasattr(event, "position") else event.pos()
+            index = self._view.indexAt(point)
+            if index.isValid() and index.column() == self._column_getter():
+                return bool(self._double_click_handler(index))
         return False
 
-    def _checkStateChanged(self, state):
-        self._setHideAuthorColumn(state != Qt.CheckState.Checked)
+class StyleSheetOverlay(QObject):
+    def __init__(self, widget, active_getter, overlay: str):
+        super().__init__(widget)
+        self._widget = widget
+        self._active = active_getter
+        self._overlay = overlay
+        self._base = ""
+        self._pending = False
+        widget.installEventFilter(self)
 
-    def _isHidden(self):
+    def update(self):
+        if self._pending:
+            return
+        self._pending = True
+        QTimer.singleShot(0, self._apply)
+
+    def _apply(self):
+        self._pending = False
+        current = self._widget.styleSheet()
+        if self._active():
+            if current != self._overlay:
+                self._base = current
+                self._widget.setStyleSheet(self._overlay)
+        elif current == self._overlay:
+            self._widget.setStyleSheet(self._base)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.StyleChange and self._widget.styleSheet() != self._overlay:
+            self.update()
         return False
-
-    def _setHideAuthorColumn(self, value):
-        return
-
-    def _get_header_text(self):
-        return self._header_text()
-
-class ScrollBarEventFilter(QObject):
-    def __init__(self, modAuthorCol:QTreeView = None):
-        self._modAuthorCol = modAuthorCol
-        super().__init__()
-
-    def eventFilter(self, obj: QObject, event: QEvent):
-        if event.type() == QEvent.Type.Show:
-            self._modAuthorCol.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
-        elif event.type() == QEvent.Type.Hide:
-            self._modAuthorCol.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        return False
-
-class LeaveEventFilter(QObject):
-    def __init__(self, modAuthorCol:QTreeView = None):
-        self._modAuthorCol = modAuthorCol
-        super().__init__()
-
-    def eventFilter(self, obj: QObject, event: QEvent):
-        if event.type() == QEvent.Type.Leave:
-            self._modAuthorCol._author_col_delegate._hovered = None
-            self._modAuthorCol.viewport().update()
-        return False
-    
